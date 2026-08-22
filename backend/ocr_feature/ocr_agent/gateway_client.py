@@ -25,18 +25,29 @@ def _resolve_api_url(url: Optional[str]) -> str:
 def _resolve_auth_token(token: Optional[str]) -> str:
     return token or os.getenv("API_KEY") or "sk_proxy_qu7f0nNyFooVFjM3iNb_lmwZr_NP-BuL"
 
-DEFAULT_MODELS = ["gemini-3.6-flash", "gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro"]
+DEFAULT_MODELS = ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-3.6-flash", "gemini-1.5-pro"]
+
+def _get_google_api_keys() -> List[str]:
+    keys = []
+    for i in range(1, 9):
+        val = os.getenv(f"GOOGLE_API_KEY{i}", "").strip()
+        if val and not val.startswith("your-"):
+            keys.append(val)
+    gem_key = os.getenv("GEMINI_API_KEY", "").strip()
+    if gem_key and gem_key not in keys:
+        keys.append(gem_key)
+    return keys
 
 class GeminiGatewayClient:
     """
-    Client for interacting with the Gemini API Gateway using API_URL="https://free-api-erel.onrender.com/api/generate".
-    Loads API_URL and API_KEY from environment variables (.env).
+    Client for interacting with the Gemini API Gateway using API_URL="https://free-api-erel.onrender.com/api/generate"
+    with automatic high-availability fallback to direct Google Gemini API endpoints.
     """
     def __init__(
         self,
         base_url: Optional[str] = None,
         auth_token: Optional[str] = None,
-        timeout: int = 60
+        timeout: int = 4
     ):
         self.api_url = _resolve_api_url(base_url)
         self.base_url = _resolve_base_url(base_url)
@@ -55,7 +66,7 @@ class GeminiGatewayClient:
         """
         url = f"{self.base_url}/api/keys/status"
         try:
-            response = requests.get(url, headers=self.headers, timeout=15)
+            response = requests.get(url, headers=self.headers, timeout=5)
             response.raise_for_status()
             return response.json()
         except Exception as e:
@@ -65,14 +76,16 @@ class GeminiGatewayClient:
     def generate_text(
         self,
         prompt: str,
-        model: str = "gemini-3.6-flash",
+        model: str = "gemini-2.0-flash",
         temperature: float = 0.2
     ) -> str:
         """
-        Text generation requesting the API_URL model endpoint directly.
+        Text generation requesting the API_URL model endpoint directly with Google API fallback.
         """
         models_to_try = [model] + [m for m in DEFAULT_MODELS if m != model]
-        payload = {
+        google_keys = _get_google_api_keys()
+
+        base_payload = {
             "prompt": prompt,
             "contents": [
                 {
@@ -87,13 +100,26 @@ class GeminiGatewayClient:
         
         last_exception = None
         for target_model in models_to_try:
-            payload["model"] = target_model
-            # 1. Try API_URL direct endpoint first
-            urls_to_try = [self.api_url, f"{self.base_url}/v1beta/models/{target_model}:generateContent"]
-            for url in urls_to_try:
+            endpoints = [
+                (self.api_url, self.headers, True),
+                (f"{self.base_url}/v1beta/models/{target_model}:generateContent", self.headers, False)
+            ]
+            for gkey in google_keys:
+                endpoints.append((
+                    f"https://generativelanguage.googleapis.com/v1beta/models/{target_model}:generateContent?key={gkey}",
+                    {"Content-Type": "application/json"},
+                    False
+                ))
+
+            for url, headers, is_proxy_api in endpoints:
+                payload = dict(base_payload)
+                payload["model"] = target_model
+                if not is_proxy_api:
+                    payload = {k: v for k, v in payload.items() if k not in ("prompt", "model")}
+
                 try:
                     response = requests.post(
-                        url, json=payload, headers=self.headers, timeout=self.timeout
+                        url, json=payload, headers=headers, timeout=self.timeout
                     )
                     if response.status_code == 404:
                         continue
@@ -107,7 +133,7 @@ class GeminiGatewayClient:
                     if "text" in data:
                         return data["text"]
                 except Exception as e:
-                    logger.warning(f"generate_text error at {url} with {target_model}: {e}")
+                    logger.warning(f"generate_text error at {url[:45]}... ({target_model}): {e}")
                     last_exception = e
 
         raise RuntimeError(f"Gateway text generation failed: {last_exception}")
@@ -118,14 +144,15 @@ class GeminiGatewayClient:
         mime_type: str,
         prompt: str,
         system_instruction: Optional[str] = None,
-        model: str = "gemini-3.6-flash",
+        model: str = "gemini-2.0-flash",
         temperature: float = 0.1,
         response_mime_type: Optional[str] = "application/json"
     ) -> str:
         """
-        Multimodal (image + text) generation requesting API_URL="https://free-api-erel.onrender.com/api/generate".
+        Multimodal (image + text) generation with API_URL and Google API fallback.
         """
         models_to_try = [model] + [m for m in DEFAULT_MODELS if m != model]
+        google_keys = _get_google_api_keys()
         base64_data = base64.b64encode(image_bytes).decode("utf-8")
 
         user_part_image = {
@@ -143,36 +170,48 @@ class GeminiGatewayClient:
             }
         ]
 
-        payload: Dict[str, Any] = {
+        base_payload: Dict[str, Any] = {
             "prompt": prompt,
             "contents": contents
         }
 
         if system_instruction:
-            payload["systemInstruction"] = {
+            base_payload["systemInstruction"] = {
                 "parts": [{"text": system_instruction}]
             }
 
         gen_config: Dict[str, Any] = {"temperature": temperature}
         if response_mime_type:
             gen_config["responseMimeType"] = response_mime_type
-        payload["generationConfig"] = gen_config
+        base_payload["generationConfig"] = gen_config
 
         last_exception = None
 
         for target_model in models_to_try:
-            payload["model"] = target_model
-            urls_to_try = [self.api_url, f"{self.base_url}/v1beta/models/{target_model}:generateContent"]
+            endpoints = [
+                (self.api_url, self.headers, True),
+                (f"{self.base_url}/v1beta/models/{target_model}:generateContent", self.headers, False)
+            ]
+            for gkey in google_keys:
+                endpoints.append((
+                    f"https://generativelanguage.googleapis.com/v1beta/models/{target_model}:generateContent?key={gkey}",
+                    {"Content-Type": "application/json"},
+                    False
+                ))
 
-            for url in urls_to_try:
-                logger.info(f"Attempting multimodal extraction at {url} (model: {target_model})")
+            for url, headers, is_proxy_api in endpoints:
+                payload = dict(base_payload)
+                payload["model"] = target_model
+                if not is_proxy_api:
+                    payload = {k: v for k, v in payload.items() if k not in ("prompt", "model")}
+
+                logger.info(f"Attempting multimodal extraction at {url[:45]}... (model: {target_model})")
                 try:
                     response = requests.post(
-                        url, json=payload, headers=self.headers, timeout=self.timeout
+                        url, json=payload, headers=headers, timeout=self.timeout
                     )
                     
                     if response.status_code == 404:
-                        logger.warning(f"URL {url} returned 404. Retrying with next endpoint...")
                         continue
                         
                     response.raise_for_status()
@@ -190,10 +229,10 @@ class GeminiGatewayClient:
                         return res_data["text"]
 
                 except requests.HTTPError as http_err:
-                    logger.warning(f"HTTP Error for {url} ({target_model}): {http_err}. Response: {response.text}")
+                    logger.warning(f"HTTP Error for {url[:45]}... ({target_model}): {http_err}")
                     last_exception = http_err
                 except Exception as e:
-                    logger.warning(f"Error calling {url} ({target_model}): {e}")
+                    logger.warning(f"Error calling {url[:45]}... ({target_model}): {e}")
                     last_exception = e
 
         raise RuntimeError(f"All model endpoints failed. Last error: {last_exception}")

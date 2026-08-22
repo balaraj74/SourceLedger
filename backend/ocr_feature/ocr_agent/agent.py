@@ -1,5 +1,5 @@
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from .schemas import (
     DocumentType,
@@ -80,16 +80,18 @@ class OCRAgentSystem:
 
         step_counter += 1
 
-        # Step 2: Multi-Page Multimodal Extraction Loop
-        logger.info(f"Agent Step {step_counter}: Running Multimodal Extraction Tool across {len(pages)} page screenshot(s)...")
+        # Step 2: Multi-Page Multimodal Extraction Loop (Parallel Concurrency)
+        logger.info(f"Agent Step {step_counter}: Running Concurrent Multimodal Extraction across {len(pages)} page screenshot(s)...")
         aggregated_data: Dict[str, Any] = {}
         all_raw_texts: List[str] = []
         primary_image_bytes, primary_mime_type, _ = pages[0]
 
-        for p_idx, (p_bytes, p_mime, p_meta) in enumerate(pages):
+        import concurrent.futures
+
+        def _process_single_page(p_item: Tuple[int, Tuple[bytes, str, Dict[str, Any]]]):
+            p_idx, (p_bytes, p_mime, p_meta) = p_item
             page_num = p_meta.get("page_number", p_idx + 1)
             logger.info(f"Extracting structured text from Page {page_num}/{len(pages)} screenshot...")
-            
             try:
                 page_data = MultimodalExtractorTool.extract(
                     client=self.client,
@@ -97,7 +99,29 @@ class OCRAgentSystem:
                     mime_type=p_mime,
                     document_type=document_type
                 )
-                
+                return (page_num, page_data, None)
+            except Exception as p_err:
+                logger.warning(f"Vision extraction failed for Page {page_num}: {p_err}")
+                return (page_num, {}, p_err)
+
+        max_workers = min(5, len(pages))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            page_results = list(executor.map(_process_single_page, enumerate(pages)))
+
+        # Sort results by page number
+        page_results.sort(key=lambda x: x[0])
+
+        for page_num, page_data, p_err in page_results:
+            if p_err:
+                trajectory.append(
+                    AgentStep(
+                        step_number=step_counter,
+                        tool_name="MultimodalExtractionTool",
+                        action_summary=f"[Page {page_num}/{len(pages)}] Vision extraction warning: {p_err}",
+                        status="WARNING"
+                    )
+                )
+            else:
                 p_text = page_data.get("raw_text", "")
                 if p_text:
                     all_raw_texts.append(f"--- Page {page_num} ---\n{p_text}")
@@ -122,17 +146,6 @@ class OCRAgentSystem:
                         output_summary=f"Extracted {len(page_data)} attributes from Page {page_num}"
                     )
                 )
-            except Exception as p_err:
-                logger.warning(f"Vision extraction failed for Page {page_num}: {p_err}")
-                trajectory.append(
-                    AgentStep(
-                        step_number=step_counter,
-                        tool_name="MultimodalExtractionTool",
-                        action_summary=f"[Page {page_num}/{len(pages)}] Vision extraction warning: {p_err}",
-                        status="WARNING"
-                    )
-                )
-            
             step_counter += 1
 
         combined_raw_text = "\n\n".join(all_raw_texts)
