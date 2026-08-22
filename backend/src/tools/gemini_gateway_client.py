@@ -6,6 +6,7 @@ Bearer token, x-api-key, or x-goog-api-key as per the Gateway Integration Spec.
 """
 
 import logging
+import os
 from typing import Any, Dict, Optional
 import httpx
 
@@ -26,16 +27,20 @@ class GeminiGatewayClient:
     ) -> None:
         raw_url = (
             base_url
+            or os.getenv("API_URL")
+            or getattr(settings, "api_url", "")
             or getattr(settings, "gemini_proxy_url", "")
             or getattr(settings, "proxy_url", "")
-            or getattr(settings, "api_url", "")
+            or "https://free-api-erel.onrender.com/api/generate"
         )
         self.base_url = raw_url.replace("/api/generate", "").rstrip("/")
         self.auth_token = (
             auth_token
+            or os.getenv("API_KEY")
+            or getattr(settings, "api_key", "")
             or getattr(settings, "gemini_proxy_token", "")
             or getattr(settings, "proxy_auth_token", "")
-            or getattr(settings, "api_key", "")
+            or "sk_proxy_qu7f0nNyFooVFjM3iNb_lmwZr_NP-BuL"
         )
         self.default_model = default_model
         self.timeout = timeout

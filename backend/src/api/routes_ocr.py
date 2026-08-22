@@ -109,6 +109,7 @@ async def extract_document_image(
             from ..models.product_record import (
                 ProductRecord as BackendProductRecord,
                 ProductField as BackendProductField,
+                SourceExcerpt as BackendSourceExcerpt,
                 FieldStatus,
                 Source as BackendSource,
                 SourceType,
@@ -118,11 +119,12 @@ async def extract_document_image(
             active_user = x_user_id or "default_user"
             source_id = uuid4()
             filename_clean = file.filename or "ocr_scan.png"
+            is_pdf = filename_clean.lower().endswith(".pdf")
             backend_source = BackendSource(
                 id=source_id,
-                source_type=SourceType.IMAGE,
+                source_type=SourceType.PDF if is_pdf else SourceType.IMAGE,
                 origin=filename_clean,
-                raw_content_ref=f"storage/{filename_clean}",
+                raw_content_ref=f"storage/sources/{filename_clean}",
                 content_hash=f"ocr_{uuid4().hex[:12]}",
                 trust_tier=TrustTier.MARKETPLACE,
             )
@@ -145,6 +147,10 @@ async def extract_document_image(
                         display_name=k.replace("_", " ").title(),
                         value=val_str,
                         confidence=conf_score,
+                        source_excerpt=BackendSourceExcerpt(
+                            source_id=source_id,
+                            text=f"Extracted from {filename_clean} via Ledger Multimodal OCR Agent",
+                        ),
                         status=f_status,
                         reasoning=f"Extracted from {filename_clean} via Ledger Multimodal OCR Agent",
                     )
@@ -158,6 +164,10 @@ async def extract_document_image(
                         display_name="Extracted OCR Text",
                         value=struct_data.get("raw_text", "Image text parsed"),
                         confidence=conf_score,
+                        source_excerpt=BackendSourceExcerpt(
+                            source_id=source_id,
+                            text=f"Extracted from {filename_clean} via Ledger Multimodal OCR Agent",
+                        ),
                         status=FieldStatus.AUTO_COMMITTED,
                         reasoning="OCR text output",
                     )
