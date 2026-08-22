@@ -235,16 +235,20 @@ class ProductStore:
         return None
 
     async def list_sources(self, user_id: Optional[str] = None) -> list[Source]:
-        if not user_id:
-            return list(self._sources.values())
         try:
             with self._get_connection() as conn:
                 cursor = conn.cursor()
-                cursor.execute("SELECT data FROM sources WHERE user_id = ?", (user_id,))
+                if user_id:
+                    cursor.execute(
+                        "SELECT data FROM sources WHERE user_id = ? OR user_id = 'default_user' ORDER BY rowid DESC",
+                        (user_id,),
+                    )
+                else:
+                    cursor.execute("SELECT data FROM sources ORDER BY rowid DESC")
                 res = []
                 for row in cursor.fetchall():
                     res.append(Source.model_validate_json(row["data"]))
-                return res
+                return res if res else list(self._sources.values())
         except Exception:
             return list(self._sources.values())
 
@@ -296,16 +300,20 @@ class ProductStore:
         return self._products.get(product_id)
 
     async def list_products(self, user_id: Optional[str] = None) -> list[ProductRecord]:
-        if not user_id:
-            return list(self._products.values())
         try:
             with self._get_connection() as conn:
                 cursor = conn.cursor()
-                cursor.execute("SELECT data FROM products WHERE user_id = ?", (user_id,))
+                if user_id:
+                    cursor.execute(
+                        "SELECT data FROM products WHERE user_id = ? OR user_id = 'default_user' ORDER BY rowid DESC",
+                        (user_id,),
+                    )
+                else:
+                    cursor.execute("SELECT data FROM products ORDER BY rowid DESC")
                 res = []
                 for row in cursor.fetchall():
                     res.append(ProductRecord.model_validate_json(row["data"]))
-                return res
+                return res if res else list(self._products.values())
         except Exception:
             return list(self._products.values())
 

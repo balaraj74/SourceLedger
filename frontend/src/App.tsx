@@ -63,7 +63,11 @@ function MainAppContent() {
           setSources(liveSources || []);
 
           if (liveProducts && liveProducts.length > 0) {
-            setSelectedProduct(prev => prev && liveProducts.some(p => p.id === prev.id) ? prev : liveProducts[0]);
+            setSelectedProduct(prev => {
+              if (!prev) return liveProducts[0];
+              const match = liveProducts.find(p => p.id === prev.id);
+              return match || prev;
+            });
             setCategories(buildCategoryOverviews(liveProducts));
           } else {
             setSelectedProduct(null);
@@ -90,7 +94,11 @@ function MainAppContent() {
   useEffect(() => {
     if (products.length > 0) {
       setCategories(buildCategoryOverviews(products));
-      setSelectedProduct(prev => prev && products.some(p => p.id === prev.id) ? prev : products[0]);
+      setSelectedProduct(prev => {
+        if (!prev) return products[0];
+        const match = products.find(p => p.id === prev.id);
+        return match || prev;
+      });
     } else {
       setCategories([]);
       setSelectedProduct(null);
