@@ -28,13 +28,13 @@ class Settings(BaseSettings):
     google_api_key8: str = ""
     openai_api_key: str = ""
     api_url: str = "https://free-api-erel.onrender.com/api/generate"
-    api_key: str = ""
+    api_key: str = "sk_proxy_qu7f0nNyFooVFjM3iNb_lmwZr_NP-BuL"
 
     # Gemini Round-Robin Gateway Proxy Settings
-    gemini_proxy_url: str = ""
-    gemini_proxy_token: str = ""
-    proxy_auth_token: str = ""
-    proxy_url: str = ""
+    gemini_proxy_url: str = "https://free-api-erel.onrender.com/api/generate"
+    gemini_proxy_token: str = "sk_proxy_qu7f0nNyFooVFjM3iNb_lmwZr_NP-BuL"
+    proxy_auth_token: str = "sk_proxy_qu7f0nNyFooVFjM3iNb_lmwZr_NP-BuL"
+    proxy_url: str = "https://free-api-erel.onrender.com/api/generate"
 
     def get_google_api_keys(self) -> list[str]:
         """Collect all configured Google Gemini API keys."""
