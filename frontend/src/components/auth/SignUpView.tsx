@@ -5,7 +5,7 @@ import { useAuth } from '../../context/AuthContext';
 import { supabase } from '../../lib/supabase';
 
 export const SignUpView: React.FC = () => {
-  const { setAuthMode, signInWithGoogle, setUnverifiedEmail } = useAuth();
+  const { setAuthMode, signInWithGoogle, setUnverifiedEmail, authError, setAuthError } = useAuth();
   
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -14,9 +14,12 @@ export const SignUpView: React.FC = () => {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [isSuccess, setIsSuccess] = useState(false);
 
+  const displayError = errorMsg || authError;
+
   const handleSignUp = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg(null);
+    setAuthError(null);
 
     // Validation
     if (!email.trim() || !password || !confirmPassword) {
@@ -67,6 +70,7 @@ export const SignUpView: React.FC = () => {
 
   const handleGoogleSignUp = async () => {
     setErrorMsg(null);
+    setAuthError(null);
     setIsSubmitting(true);
     const { error } = await signInWithGoogle();
     if (error) {
@@ -107,10 +111,10 @@ export const SignUpView: React.FC = () => {
       title="Create Your Account"
       subtitle="Join SourceLedger to govern autonomous product data pipelines."
     >
-      {errorMsg && (
+      {displayError && (
         <div className="p-3 rounded-2xl bg-[#FFF0ED] border border-[#D45320]/20 text-[#D45320] text-xs flex items-center gap-2 animate-in fade-in duration-150">
           <AlertCircle className="w-4 h-4 shrink-0" />
-          <span>{errorMsg}</span>
+          <span>{displayError}</span>
         </div>
       )}
 

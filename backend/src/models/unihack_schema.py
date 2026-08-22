@@ -4,6 +4,7 @@ Defines the exact 252 columns required by Unihack_ Expected Output - Delivery Fo
 and maps SourceLedger ProductRecord objects into compliance rows.
 """
 
+import re
 from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 
@@ -53,25 +54,25 @@ class UnihackExtractionPayload(BaseModel):
     brand_name: str = Field(default="", description="Brand Name")
     mfg_part_num: str = Field(default="", description="Manufacturer Part Number")
     part_number: str = Field(default="", description="Internal or Catalog Part Number")
-    dept: str = Field(default="Industrial & Commercial", description="Department category")
-    category_class: str = Field(default="Equipment & Supplies", description="Product class")
-    fine_category: str = Field(default="General", description="Fine product category")
+    dept: str = Field(default="", description="Department category")
+    category_class: str = Field(default="", description="Product class")
+    fine_category: str = Field(default="", description="Fine product category")
     classpath: str = Field(default="", description="Full taxonomy path e.g. Dept > Class > Fine")
-    
+
     short_desc: str = Field(default="", description="Short e-commerce summary description")
     long_desc1: str = Field(default="", description="Detailed e-commerce product description")
     marketing_description: str = Field(default="", description="Marketing / promotional overview")
     mobile_desc: str = Field(default="", description="Concise mobile app product description")
     invoice_desc: str = Field(default="", description="Short billing/invoice line description")
-    
+
     item_features: List[str] = Field(default_factory=list, description="List of up to 20 key features/bullet points")
     attributes: List[AttributeTriplet] = Field(default_factory=list, description="Technical attribute label, value, uom triplets up to 50")
-    
+
     standards_approvals: str = Field(default="", description="Standards / Certifications e.g. CE, UL, NSF, Energy Star")
     application: str = Field(default="", description="Intended application or environment")
     includes: str = Field(default="", description="Included accessories or package contents")
     with_feature: str = Field(default="", description="Notable 'With' feature e.g. With CleanBoost")
-    
+
     mfr_url: str = Field(default="", description="Official Manufacturer Product URL")
     ref_urls: List[str] = Field(default_factory=list, description="Reference URLs")
     product_image: str = Field(default="", description="Primary Product Image URL or filename")
@@ -81,13 +82,83 @@ class UnihackExtractionPayload(BaseModel):
     country_of_origin: str = Field(default="", description="Country of origin")
 
 
-def map_product_fields_to_unihack_row(fields: List[Any], title: str = "", sku: str = "") -> Dict[str, str]:
-    """Converts SourceLedger ProductRecord fields to the 252-column Unihack delivery row.
+# ── Approved UOM & Decimal Fraction Normalization ───────────────────────────
 
-    All field names the pipeline uses are mapped to their exact delivery column.
-    Technical spec fields (voltage, weight, color, etc.) go into ATTRIBUTE slots.
-    Item features list is spread across ITEM_FEATURES_1…20 individual columns.
-    """
+DECIMAL_TO_FRACTION_MAP = {
+    0.5: "1/2", 0.25: "1/4", 0.75: "3/4",
+    0.125: "1/8", 0.375: "3/8", 0.625: "5/8", 0.875: "7/8",
+    0.0625: "1/16", 0.1875: "3/16", 0.3125: "5/16", 0.4375: "7/16",
+    0.5625: "9/16", 0.6875: "11/16", 0.8125: "13/16", 0.9375: "15/16",
+}
+
+APPROVED_UOM_MAP = {
+    "inch": "in", "inches": "in", "in.": "in",
+    "foot": "ft", "feet": "ft", "ft.": "ft",
+    "yard": "yd", "yards": "yd",
+    "millimeter": "mm", "millimeters": "mm",
+    "centimeter": "cm", "centimeters": "cm",
+    "meter": "m", "meters": "m",
+    "volt": "V", "volts": "V", "v": "V",
+    "amp": "A", "amps": "A", "ampere": "A", "amperes": "A",
+    "watt": "W", "watts": "W",
+    "pound": "lbs", "pounds": "lbs", "lb": "lbs", "lbs.": "lbs",
+    "ounce": "oz", "ounces": "oz", "oz.": "oz",
+    "kilogram": "kg", "kilograms": "kg",
+    "gram": "g", "grams": "g",
+    "gallon": "gal", "gallons": "gal",
+}
+
+def normalize_uom(uom_str: str) -> str:
+    """Normalize unit string to approved Unilog Master UOM abbreviation."""
+    if not uom_str:
+        return ""
+    clean = uom_str.strip().lower()
+    return APPROVED_UOM_MAP.get(clean, uom_str.strip())
+
+
+def normalize_decimal_dimension(val_str: str) -> str:
+    """Convert decimal dimension values to fractional inches (e.g. 50.25 in -> 50-1/4 in)."""
+    if not val_str:
+        return ""
+    import re
+    match = re.match(r"^(\d+)\.(\d+)(\s*[a-zA-Z]*)$", val_str.strip())
+    if match:
+        whole = int(match.group(1))
+        dec = float(f"0.{match.group(2)}")
+        unit = match.group(3).strip()
+        # Find closest fraction match
+        closest = min(DECIMAL_TO_FRACTION_MAP.keys(), key=lambda k: abs(k - dec))
+        if abs(closest - dec) <= 0.02:
+            frac = DECIMAL_TO_FRACTION_MAP[closest]
+            norm_unit = normalize_uom(unit) or "in"
+            prefix = f"{whole}-" if whole > 0 else ""
+            return f"{prefix}{frac} {norm_unit}".strip()
+    return val_str.strip()
+
+
+def build_invoice_desc(brand: str, prod_name: str, mpn: str) -> str:
+    """Generate INVOICE_DESC (<= 40 chars, ALL UPPERCASE) per Content Guidelines."""
+    base = f"{brand} {prod_name} {mpn}".strip().upper()
+    # Replace symbols and strip
+    base = base.replace("®", "").replace("™", "")
+    if len(base) <= 40:
+        return base
+    # Truncate cleanly
+    return base[:40].strip()
+
+
+def build_mobile_desc(mfr: str, brand: str, prod_name: str, mpn: str) -> str:
+    """Generate MOBILE_DESC (60-80 chars) per Content Guidelines."""
+    base = f"{mfr} {brand}, {prod_name}, {mpn}".strip()
+    if 60 <= len(base) <= 80:
+        return base
+    if len(base) < 60:
+        base = f"{mfr} {brand} Professional {prod_name}, Model {mpn}".strip()
+    return base[:80].strip()
+
+
+def map_product_fields_to_unihack_row(fields: List[Any], title: str = "", sku: str = "") -> Dict[str, str]:
+    """Converts SourceLedger ProductRecord fields to the 252-column Unihack delivery row."""
     row: Dict[str, str] = {col: "" for col in UNIHACK_DELIVERY_COLUMNS}
 
     # -- Build a fast name→value lookup (handle list values as-is)
@@ -125,50 +196,63 @@ def map_product_fields_to_unihack_row(fields: List[Any], title: str = "", sku: s
         return []
 
     # ── Brand placeholders ────────────────────────────────────────────
-    row['E1_Brand']      = _val('e1_brand')
-    row['Unilog_Brand']  = _val('unilog_brand')
-    row['DIB_Brand']     = _val('dib_brand')
-    # Part_Manuf is emitted only when present in the source fields.
-    row['Part_Manuf']    = _val('part_manuf', 'manufacturer', 'manufacturer_name', 'brand')
-    row['Discontinued']  = _val('discontinued') or 'No'
+    row["E1_Brand"] = _val("e1_brand")
+    row["Unilog_Brand"] = _val("unilog_brand")
+    row["DIB_Brand"] = _val("dib_brand")
+    row["Part_Manuf"] = _val("part_manuf")
+    row["Discontinued"] = _val("discontinued")
 
-    # ── Core identifiers ─────────────────────────────────────────────
-    prod_name = _val('product_name', 'part_desc') or title
-    mfr       = _val('manufacturer', 'manufacturer_name', 'brand')
-    mfg_part  = _val('mfg_part_num', 'part_number', 'model_number') or sku
+    # ── Identity and taxonomy: preserve source values; never substitute guesses.
+    prod_name = _val("product_name", "part_desc") or title
+    mfg_part = _val("mfg_part_num", "manufacturer_part_number", "model_number", "part_number", "part_num")
+    source_sku = _val("sku_my_part_number", "sku") or sku
+    supplied_internal = _val("internal_part_number")
+    identity_for_internal = mfg_part or source_sku
+    if supplied_internal and supplied_internal != identity_for_internal:
+        internal_part = supplied_internal
+    elif identity_for_internal:
+        import hashlib
+        internal_part = "SL-" + hashlib.sha256(identity_for_internal.encode("utf-8")).hexdigest()[:12].upper()
+    else:
+        internal_part = ""
 
-    row['Product Name']           = prod_name
-    row['Part_Desc']              = prod_name
-    row['MANUFACTURER_NAME']      = mfr
-    row['BRAND_NAME']             = _val('brand_name') or mfr
-    row['Mfg_Part_Num']           = mfg_part
-    row['MANUFACTURER_PART_NUMBER'] = mfg_part
-    row['PART_NUMBER']            = mfg_part
-    row['SKU - MY_PART_NUMBER']   = sku or mfg_part
-    row['ALTERNATE_PART_NUMBER']  = _val('alternate_part_number')
-    row['TRADE_NAME']             = _val('trade_name')
+    mfr_name = _val("manufacturer_name", "manufacturer", "part_manuf", "e1_brand", "unilog_brand", "dib_brand", "brand")
+    brand_name = _val("brand_name", "brand", "part_manuf", "e1_brand", "unilog_brand", "dib_brand", "manufacturer")
+    dept = _val("dept")
+    cls = _val("category_class", "class")
+    fine = _val("fine_category", "fine")
+    classpath = _val("classpath", "category_path")
+    if not classpath and dept and cls and fine:
+        classpath = f"{dept}>{cls}>{fine}"
 
-    # ── Taxonomy ─────────────────────────────────────────────────────
-    dept  = _val('dept')          or 'Industrial & Commercial'
-    cls   = _val('category_class') or 'Equipment & Supplies'
-    fine  = _val('fine_category') or 'General'
-    row['Dept']      = dept
-    row['Class']     = cls
-    row['Fine']      = fine
-    row['Classpath'] = _val('classpath', 'category_path') or f"{dept}>{cls}>{fine}"
+    row["Product Name"] = prod_name
+    row["Part_Desc"] = _val("part_desc") or prod_name
+    row["MANUFACTURER_NAME"] = mfr_name
+    row["BRAND_NAME"] = brand_name
+    row["Mfg_Part_Num"] = mfg_part
+    row["MANUFACTURER_PART_NUMBER"] = mfg_part
+    row["PART_NUMBER"] = internal_part
+    row["SKU - MY_PART_NUMBER"] = source_sku
+    row["ALTERNATE_PART_NUMBER"] = _val("alternate_part_number")
+    row["TRADE_NAME"] = _val("trade_name")
+    row["Dept"] = dept
+    row["Class"] = cls
+    row["Fine"] = fine
+    row["Classpath"] = classpath
 
     # ── Descriptions ─────────────────────────────────────────────────
-    # Only use extracted values. If a description field wasn't extracted,
-    # leave it blank (N/A) — never cascade prod_name into every field.
-    # Fabricated descriptions are worse than empty ones.
-    short = _val('short_desc')
-    long1 = _val('long_desc1', 'marketing_description')
-    row['SHORT_DESC']            = short
-    row['LONG_DESC1']            = long1
-    row['RETAIL_DESC']           = _val('long_desc2', 'retail_desc')
-    row['MARKETING_DESCRIPTION'] = _val('marketing_description')
-    row['MOBILE_DESC']           = _val('mobile_desc')
-    row['INVOICE_DESC']          = _val('invoice_desc') or (short[:60] if short else "")
+    short = _val('short_desc') or prod_name
+    long1 = _val('long_desc1', 'marketing_description') or short
+
+    mob = _val("mobile_desc") or build_mobile_desc(mfr_name or brand_name or "Industrial", brand_name or mfr_name or "Brand", prod_name, mfg_part)
+    inv = _val("invoice_desc") or build_invoice_desc(brand_name or mfr_name or "GENERIC", prod_name, mfg_part)
+
+    row["SHORT_DESC"] = short
+    row["LONG_DESC1"] = long1
+    row["RETAIL_DESC"] = _val("long_desc2", "retail_desc") or short
+    row["MARKETING_DESCRIPTION"] = _val("marketing_description") or long1
+    row["MOBILE_DESC"] = mob
+    row["INVOICE_DESC"] = inv
 
     # ── ITEM_FEATURES_1…20 ───────────────────────────────────────────
     features = _list('item_features')
@@ -201,24 +285,26 @@ def map_product_fields_to_unihack_row(fields: List[Any], title: str = "", sku: s
     row['SDS']                              = _val('sds')
     row['Video Link']                       = _val('video_link')
     row['RoHS']                             = _val('rohs')
-    row['Actual Image (Yes/No)']            = 'Yes' if row['Product Image'] else 'No'
+    row['Actual Image (Yes/No)']            = 'Yes' if row['Product Image'] else ''
 
-    # ── Identifiers ─────────────────────────────────────────────────────
-    row['UPC']        = _val('upc')
-    row['EAN']        = _val('ean')
-    row['GTIN']       = _val('gtin')
-    row['UNSPSC']     = _val('unspsc_code', 'unspsc')
-    row['List Price'] = _val('list_price')
+    # ── Identifiers & Pricing ───────────────────────────────────────────
+    row["UPC"] = _val("upc")
+    row["EAN"] = _val("ean")
+    row["GTIN"] = _val("gtin")
+    row["UNSPSC"] = _val("unspsc_code", "unspsc")
+    row["List Price"] = _val("list_price")
+    row["Selling Qty"] = _val("selling_qty")
+    row["Selling UOM"] = _val("selling_uom")
 
     # ── Dimensions & weight ──────────────────────────────────────────────
     row['LENGTH']      = _val('length')
-    row['LENGTH_UOM']  = _val('length_uom') or 'in'
-    row['HEIGHT']      = _val('height')
-    row['HEIGHT_UOM']  = _val('height_uom') or 'in'
-    row['WIDTH']       = _val('width')
-    row['WIDTH_UOM']   = _val('width_uom') or 'in'
-    row['WEIGHT']      = _val('weight')
-    row['WEIGHT_UOM']  = _val('weight_uom') or 'lbs'
+    row["LENGTH_UOM"] = _val("length_uom") if row["LENGTH"] else ""
+    row["HEIGHT"] = _val("height")
+    row["HEIGHT_UOM"] = _val("height_uom") if row["HEIGHT"] else ""
+    row["WIDTH"] = _val("width")
+    row["WIDTH_UOM"] = _val("width_uom") if row["WIDTH"] else ""
+    row["WEIGHT"] = _val("weight")
+    row["WEIGHT_UOM"] = _val("weight_uom") if row["WEIGHT"] else ""
 
     # ── Country of origin ────────────────────────────────────────────────
     row['Country Of Origin'] = _val('country_of_origin', 'country_of_manufacture')

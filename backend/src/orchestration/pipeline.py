@@ -70,6 +70,7 @@ async def run_pipeline(
     category: str | None = None,
     filename: str | None = None,
     trust_tier: TrustTier = TrustTier.MARKETPLACE,
+    user_id: str = "default_user",
 ) -> ProductRecord:
     """Run the full extraction pipeline on a single source.
 
@@ -122,7 +123,7 @@ async def run_pipeline(
                     return p
 
         # Save source record
-        await store.save_source(ingestion_result.source)
+        await store.save_source(ingestion_result.source, user_id=user_id)
 
         # ── Auto-detect category if not provided ──────────────────────
         if not category:
@@ -326,7 +327,7 @@ async def run_pipeline(
                 product.mfg_part_num = str(_pn_field.value).strip()
                 break
 
-        await store.save_product(product)
+        await store.save_product(product, user_id=user_id)
 
         ctx["output_summary"] = (
             f"'{product.name}' — {len(product.fields)} fields, "

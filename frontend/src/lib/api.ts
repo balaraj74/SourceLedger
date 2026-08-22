@@ -18,13 +18,24 @@ import {
   FieldAuditEntry,
 } from '../types';
 
+import { supabase } from './supabase';
+
 const BASE_URL = '/api';
 
 // ── Low-level fetch helper ─────────────────────────────────────────────
 
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
+  const customHeaders: Record<string, string> = { 'Content-Type': 'application/json' };
+  try {
+    const { data: { session } } = await supabase.auth.getSession();
+    const currentUserId = session?.user?.id || session?.user?.email;
+    if (currentUserId) {
+      customHeaders['x-user-id'] = currentUserId;
+    }
+  } catch {}
+
   const res = await fetch(`${BASE_URL}${path}`, {
-    headers: { 'Content-Type': 'application/json', ...init?.headers },
+    headers: { ...customHeaders, ...init?.headers },
     ...init,
   });
   if (!res.ok) {
@@ -234,6 +245,7 @@ function mapBackendProductToFrontend(
     confidenceLevel: confidenceToLevel(product.confidence_overall),
     status,
     lastUpdated: formatRelativeTime(product.updated_at),
+    createdAt: product.created_at || product.updated_at,
     sourceDocument: sourceDisplayName,
     fieldsCount: product.fields.length,
     fieldsReviewedCount: reviewedCount,
@@ -251,6 +263,8 @@ function mapBackendProductToFrontend(
 }
 
 export interface OcrExtractionData {
+  product_id?: string;
+  source_id?: string;
   structured_data?: any;
   validation_report?: {
     is_valid?: boolean;
@@ -358,7 +372,8 @@ export function mapOcrResultToProductRecord(
   }
 
   const timestamp = 'Just now';
-  const prodId = `prod-ocr-${Date.now()}`;
+  const prodId = ocrData.product_id || `prod-ocr-${Date.now()}`;
+  const sourceId = ocrData.source_id || `src-ocr-${Date.now()}`;
   const sku = `OCR-${Date.now().toString(36).toUpperCase().slice(-6)}`;
 
   const auditLog: FieldAuditEntry[] = [
@@ -400,7 +415,7 @@ export function mapOcrResultToProductRecord(
   };
 
   const source: IngestionSource = {
-    id: `src-ocr-${Date.now()}`,
+    id: sourceId,
     name: filename,
     fileName: filename,
     fileType: 'PDF Datasheet',
@@ -671,4 +686,98 @@ export async function checkBackendHealth(): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+export interface SuspiciousFillAlert {
+  field_name: string;
+  repeated_value: string;
+  repetition_count: number;
+  repetition_share_pct: number;
+  severity: 'CRITICAL' | 'WARNING';
+  recommendation: string;
+}
+
+export interface ClassificationDiversityAlert {
+  taxonomy_path: string;
+  record_count: number;
+  coverage_pct: number;
+  severity: string;
+  recommendation: string;
+}
+
+export interface QualityDashboardData {
+  total_records: number;
+  total_sources: number;
+  coverage_pct: number;
+  confidence_overall_avg: number;
+  auto_committed_pct: number;
+  needs_review_pct: number;
+  needs_review_count: number;
+  suspicious_fill_alerts: SuspiciousFillAlert[];
+  classification_diversity_alerts: ClassificationDiversityAlert[];
+  confidence_histogram: {
+    high: number;
+    medium: number;
+    low: number;
+  };
+  aging_summary: {
+    less_than_1h: number;
+    '1h_to_24h': number;
+    more_than_24h: number;
+  };
+}
+
+export async function getQualityDashboard(): Promise<QualityDashboardData> {
+  return apiFetch<QualityDashboardData>('/dashboard/quality');
+}
+
+export interface ProductRelationshipData {
+  id: string;
+  source_sku: string;
+  target_sku: string;
+  relationship_type: 'variant_of' | 'substitute_for' | 'compatible_with' | 'accessory_for' | 'same_family';
+  confidence: number;
+  reasoning: string;
+  evidence_field?: string;
+}
+
+export async function getProductRelationships(sku: string): Promise<ProductRelationshipData[]> {
+  try {
+    return await apiFetch<ProductRelationshipData[]>(`/products/${encodeURIComponent(sku)}/relationships`);
+  } catch {
+    return [];
+  }
+}
+
+export interface CopilotResponse {
+  question: string;
+  answer: string;
+  cited_skus: string[];
+  executed_tools: Array<{
+    agent: string;
+    tool_name: string;
+    summary: string;
+    details?: any;
+  }>;
+  data_preview: Array<{
+    sku: string;
+    name: string;
+    category: string;
+    confidence_overall: number;
+    fields: Record<string, any>;
+  }>;
+  suggested_actions: string[];
+}
+
+export async function sendCopilotMessage(prompt: string): Promise<CopilotResponse> {
+  return apiFetch<CopilotResponse>('/copilot/chat', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ prompt }),
+  });
+}
+
+export async function getCopilotSuggestions(): Promise<Array<{ label: string; prompt: string; icon: string }>> {
+  const res = await apiFetch<{ suggestions: Array<{ label: string; prompt: string; icon: string }> }>('/copilot/suggestions');
+  return res.suggestions || [];
 }

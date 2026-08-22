@@ -172,8 +172,9 @@ class MultiPhaseExtractor:
         source_text: str,
         source_id: UUID,
         *,
-        model: str = "gemini-2.5-flash",
+        model: str = "gemini-3.6-flash",
         temperature: float = 0.05,
+
     ) -> None:
         self._client = client
         self._source_text = source_text[:16_000]  # hard cap to stay in context

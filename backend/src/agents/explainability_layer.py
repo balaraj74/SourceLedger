@@ -42,7 +42,8 @@ def verify_provenance_citation(field_name: str, excerpt: str, reasoning: str) ->
 
 
 class ADKAgent:
-    def __init__(self, name: str, model: str = "gemini-2.5-flash", tools: list | None = None):
+    def __init__(self, name: str, model: str = "gemini-3.6-flash", tools: list | None = None):
+
         self.name = name
         self.model = model
         self.tools = tools or ["tool_1"]

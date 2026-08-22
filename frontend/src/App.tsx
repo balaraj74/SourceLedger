@@ -7,8 +7,8 @@ import { FieldInspectorView } from './components/FieldInspectorView';
 import { ReviewQueueView } from './components/ReviewQueueView';
 import { ProductsCatalogView } from './components/ProductsCatalogView';
 import { IngestionSourcesView } from './components/IngestionSourcesView';
-import { SettingsView } from './components/SettingsView';
-import { OcrAgentView } from './components/OcrAgentView';
+import { DataQualityDashboardView } from './components/DataQualityDashboardView';
+import { CatalogCopilotView } from './components/CatalogCopilotView';
 import { IngestModal } from './components/IngestModal';
 import { INITIAL_PRODUCTS, INITIAL_SOURCES, CATEGORY_OVERVIEWS } from './data/mockData';
 import { ProductRecord, IngestionSource, CategoryOverview, ActiveTab, FieldAuditEntry } from './types';
@@ -327,6 +327,12 @@ function MainAppContent() {
                 />
               )}
 
+              {activeTab === 'quality_dashboard' && (
+                <DataQualityDashboardView
+                  onNavigateToReview={() => setActiveTab('review_queue')}
+                />
+              )}
+
               {activeTab === 'field_inspector' && (
                 <FieldInspectorView
                   product={selectedProduct!}
@@ -360,6 +366,20 @@ function MainAppContent() {
                 <IngestionSourcesView
                   sources={sources}
                   onOpenIngestModal={() => setIsIngestModalOpen(true)}
+                />
+              )}
+
+              {activeTab === 'copilot' && (
+                <CatalogCopilotView
+                  onSelectProduct={(sku) => {
+                    const match = products.find((p) => (p.sku || p.name).toLowerCase() === sku.toLowerCase());
+                    if (match) {
+                      setSelectedProduct(match);
+                      setActiveTab('field_inspector');
+                    } else {
+                      setActiveTab('catalog');
+                    }
+                  }}
                 />
               )}
 

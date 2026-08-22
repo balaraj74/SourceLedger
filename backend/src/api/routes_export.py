@@ -222,3 +222,23 @@ async def export_single_product_csv(product_id: UUID):
         media_type="text/csv",
         headers={"Content-Disposition": f"attachment; filename=Unihack_Delivery_{safe_name}.csv"},
     )
+
+
+@router.get("/export/jsonld")
+async def export_catalog_jsonld():
+    """Export all validated products in Schema.org/Product JSON-LD format (Phase 12c)."""
+    from ..services.jsonld_exporter import export_catalog_to_jsonld
+    products = await store.list_products()
+    valid_prods = [p for p in products if p.confidence_overall >= 50]
+    jsonld_data = export_catalog_to_jsonld(valid_prods)
+    return jsonld_data
+
+
+@router.get("/products/{product_id}/export/jsonld")
+async def export_single_product_jsonld(product_id: UUID):
+    """Export a single product in Schema.org/Product JSON-LD format (Phase 12c)."""
+    from ..services.jsonld_exporter import export_product_to_jsonld
+    product = await store.get_product(product_id)
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+    return export_product_to_jsonld(product)

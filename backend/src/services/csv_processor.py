@@ -7,6 +7,7 @@ and outputs enriched structured data matching the exact 252-column delivery sche
 
 import csv
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -64,6 +65,59 @@ class CSVProcessor:
     def __init__(self, pipeline: Optional[AgentPipeline] = None) -> None:
         self.pipeline = pipeline or AgentPipeline()
 
+
+    @staticmethod
+    def _normalise_column(name: str) -> str:
+        return re.sub(r"_+", "_", re.sub(r"[^a-z0-9]+", "_", str(name).lower())).strip("_")
+
+
+    @classmethod
+    def _source_value(cls, row: dict[str, Any], aliases: tuple[str, ...]) -> str:
+        values = {cls._normalise_column(key): value for key, value in row.items() if key}
+        for alias in aliases:
+            value = values.get(alias)
+            if value is not None and str(value).strip():
+                return str(value).strip()
+        for key, value in values.items():
+            if value is not None and str(value).strip() and any(alias in key for alias in aliases):
+                return str(value).strip()
+        return ""
+
+
+    @staticmethod
+    def _delivery_sanity_issues(input_ids: set[str], rows: list[dict[str, str]], manifest: list[dict[str, Any]]) -> list[str]:
+        """Report suspect delivery data without replacing source-backed values."""
+        from collections import Counter
+
+        issues: list[str] = []
+        output_ids = {row.get("Mfg_Part_Num", "").strip() for row in rows if row.get("Mfg_Part_Num", "").strip()}
+        unexpected = output_ids - input_ids
+        if unexpected:
+            issues.append("out-of-scope manufacturer part numbers")
+        if len(rows) != len(manifest):
+            issues.append("coverage mismatch between rows and manifest")
+
+        for column in ("UPC", "EAN", "GTIN", "List Price"):
+            values = [row.get(column, "").strip() for row in rows if row.get(column, "").strip()]
+            if values:
+                value, count = Counter(values).most_common(1)[0]
+                if count > 1 and count / len(rows) > 0.05:
+                    issues.append(f"repeated {column} value {value!r} in {count}/{len(rows)} rows")
+
+        collapsed = [
+            row for row in rows
+            if row.get("PART_NUMBER", "").strip()
+            and row.get("PART_NUMBER", "").strip() == row.get("Mfg_Part_Num", "").strip() == row.get("SKU - MY_PART_NUMBER", "").strip()
+        ]
+        if collapsed:
+            issues.append(f"identifier collapse in {len(collapsed)} rows")
+
+        product_names = {row.get("Product Name", "").strip() or row.get("Part_Desc", "").strip() for row in rows}
+        classpaths = {row.get("Classpath", "").strip() for row in rows if row.get("Classpath", "").strip()}
+        if len(rows) >= 6 and len(product_names - {""}) > 1 and len(classpaths) == 1:
+            issues.append("classification diversity requires review")
+        return issues
+
     def get_delivery_headers(self, sample_delivery_file: Optional[Path] = None) -> list[str]:
         """Load delivery column headers from sample expected file if present."""
         if sample_delivery_file and sample_delivery_file.exists():
@@ -107,6 +161,7 @@ class CSVProcessor:
 
         delivery_rows = []
         json_records = []
+        manifest: list[dict[str, Any]] = []
 
         with open(input_path, mode="r", encoding="utf-8-sig") as f:
             reader = csv.DictReader(f)
@@ -118,28 +173,28 @@ class CSVProcessor:
         total_rows = len(rows)
         logger.info("Processing %d records into delivery format", total_rows)
 
+        manufacturer_identifier_columns = ("mfg_part_num", "manufacturer_part_number", "mpn", "model_number", "part_number", "part_num", "catalog_number", "vendor_part_number")
+        sku_columns = ("sku_my_part_number", "sku", "item_number", "item_id")
+        identifier_columns = manufacturer_identifier_columns + sku_columns
+        description_columns = ("part_desc", "product_description", "product_name", "description", "item_description", "long_description", "short_description", "item_name", "name", "title")
+        input_ids = {self._source_value(source_row, identifier_columns) for source_row in rows if self._source_value(source_row, identifier_columns)}
+
         for idx, row in enumerate(rows, start=1):
-            mfg_part_num = row.get("Mfg_Part_Num", "").strip()
-            part_desc = row.get("Part_Desc", "").strip()
-            part_manuf = row.get("Part_Manuf", "").strip()
-            e1_brand = row.get("E1_Brand", "").strip()
-            unilog_brand = row.get("Unilog_Brand", "").strip()
-            dib_brand = row.get("DIB_Brand", "").strip()
-
-            raw_text = (
-                f"Manufacturer Part Number: {mfg_part_num}\n"
-                f"Description: {part_desc}\n"
-                f"Manufacturer/Brand: {part_manuf}\n"
-                f"Brand Details: {e1_brand} | {unilog_brand} | {dib_brand}\n"
-            )
-
-            category = self._detect_category_from_row(raw_text)
+            mfg_part_num = self._source_value(row, manufacturer_identifier_columns)
+            source_sku = self._source_value(row, sku_columns)
+            input_identifier = mfg_part_num or source_sku
+            part_desc = self._source_value(row, description_columns)
+            part_manuf = self._source_value(row, ("part_manuf",))
+            e1_brand = self._source_value(row, ("e1_brand",))
+            unilog_brand = self._source_value(row, ("unilog_brand",))
+            dib_brand = self._source_value(row, ("dib_brand",))
+            raw_text = json.dumps(row, ensure_ascii=False)
 
             try:
                 product = await self.pipeline.run(
-                    source_type=SourceType.WEB,
+                    source_type=SourceType.CSV,
                     content=raw_text,
-                    category=category,
+                    category="generic",
                     filename=input_path.name,
                     trust_tier=TrustTier.DISTRIBUTOR,
                 )
@@ -149,16 +204,16 @@ class CSVProcessor:
                 mapped_row = map_product_fields_to_unihack_row(
                     product.fields,
                     title=product.name,
-                    sku=mfg_part_num,
-                )
+                    sku="",
+                ) or {}
                 d_row = {header: mapped_row.get(header, "") for header in headers}
 
-                # Preserve source-provided CSV identity fields verbatim.
+
+                # Preserve only explicit source values. PART_NUMBER remains the distinct internal ID, and SKU is never copied from an MPN.
                 for header, value in {
                     "Mfg_Part_Num": mfg_part_num,
-                    "PART_NUMBER": mfg_part_num,
                     "MANUFACTURER_PART_NUMBER": mfg_part_num,
-                    "SKU - MY_PART_NUMBER": mfg_part_num,
+                    "SKU - MY_PART_NUMBER": source_sku,
                     "Part_Desc": part_desc,
                     "E1_Brand": e1_brand,
                     "Unilog_Brand": unilog_brand,
@@ -170,9 +225,20 @@ class CSVProcessor:
 
                 d_row["Product Name"] = product.name or part_desc
                 delivery_rows.append(d_row)
+                review_reasons = []
+                if not input_identifier:
+                    review_reasons.append("no recognizable source identifier")
+                if not d_row.get("Classpath"):
+                    review_reasons.append("classification not source-verified")
+                manifest.append({"row_number": idx, "input_identifier": input_identifier,
+                                 "status": "enriched" if not review_reasons else "needs_review",
+                                 "reasons": review_reasons, "product_id": str(product.id)})
 
                 json_records.append({
+                    "row_number": idx,
+                    "status": manifest[-1]["status"],
                     "mfg_part_num": mfg_part_num,
+                    "input_identifier": input_identifier,
                     "product_id": str(product.id),
                     "product_name": product.name,
                     "category": product.category,
@@ -199,6 +265,13 @@ class CSVProcessor:
                 d_row["Part_Desc"] = part_desc
                 # Failed rows intentionally contain no synthetic product description.
                 delivery_rows.append(d_row)
+                manifest.append({"row_number": idx, "input_identifier": input_identifier,
+                                 "status": "skipped_unprocessable", "reasons": [str(e)], "product_id": None})
+
+        sanity_issues = self._delivery_sanity_issues(input_ids, delivery_rows, manifest)
+        scope_issues = [issue for issue in sanity_issues if issue.startswith("out-of-scope") or issue.startswith("coverage mismatch")]
+        if scope_issues:
+            raise RuntimeError("Delivery validation failed: " + "; ".join(scope_issues))
 
         # Write Output Delivery CSV
         output_csv_file = out_dir / "Unihack_ Output - Delivery Format.csv"
@@ -215,10 +288,16 @@ class CSVProcessor:
                     "processed_count": len(delivery_rows),
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                     "records": json_records,
+                    "manifest": manifest,
+                    "sanity_issues": sanity_issues,
                 },
                 f,
                 indent=2,
             )
+
+        manifest_file = out_dir / "Unihack_ Output - Delivery Manifest.json"
+        with open(manifest_file, mode="w", encoding="utf-8") as f:
+            json.dump({"input_file": input_path.name, "rows": manifest, "sanity_issues": sanity_issues}, f, indent=2)
 
         logger.info("Successfully wrote delivery format to %s and %s", output_csv_file, output_json_file)
 
@@ -226,6 +305,8 @@ class CSVProcessor:
             "total_processed": len(delivery_rows),
             "output_csv": str(output_csv_file),
             "output_json": str(output_json_file),
+            "output_manifest": str(manifest_file),
+            "sanity_issues": sanity_issues,
         }
 
     def _detect_category_from_row(self, raw_text: str) -> str:

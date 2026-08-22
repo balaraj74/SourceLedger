@@ -5,16 +5,19 @@ import { useAuth } from '../../context/AuthContext';
 import { supabase } from '../../lib/supabase';
 
 export const SignInView: React.FC = () => {
-  const { setAuthMode, signInWithGoogle, setUnverifiedEmail } = useAuth();
+  const { setAuthMode, signInWithGoogle, signInAsGuest, setUnverifiedEmail, authError, setAuthError } = useAuth();
   
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
+  const displayError = errorMsg || authError;
+
   const handleSignIn = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg(null);
+    setAuthError(null);
 
     if (!email.trim() || !password) {
       setErrorMsg('Please enter both email and password.');
@@ -48,6 +51,7 @@ export const SignInView: React.FC = () => {
 
   const handleGoogleSignIn = async () => {
     setErrorMsg(null);
+    setAuthError(null);
     setIsSubmitting(true);
     const { error } = await signInWithGoogle();
     if (error) {
@@ -61,10 +65,10 @@ export const SignInView: React.FC = () => {
       title="Sign in to SourceLedger"
       subtitle="Enter your credentials to access your autonomous catalog platform."
     >
-      {errorMsg && (
+      {displayError && (
         <div className="p-3 rounded-2xl bg-[#FFF0ED] border border-[#D45320]/20 text-[#D45320] text-xs flex items-center gap-2 animate-in fade-in duration-150">
           <AlertCircle className="w-4 h-4 shrink-0" />
-          <span>{errorMsg}</span>
+          <span>{displayError}</span>
         </div>
       )}
 

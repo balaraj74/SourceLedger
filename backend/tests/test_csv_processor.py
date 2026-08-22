@@ -1,47 +1,61 @@
-"""Tests for CSVProcessor delivery format generation."""
+"""Regression tests for source-backed delivery CSV processing."""
 
+import asyncio
 import csv
 import json
 from pathlib import Path
-import pytest
+from types import SimpleNamespace
+from uuid import uuid4
 
+from src.models.product_record import FieldStatus, ProductField, SourceExcerpt
 from src.services.csv_processor import CSVProcessor, EXPECTED_DELIVERY_HEADERS
 
 
-@pytest.mark.asyncio
-async def test_csv_processor_delivery_format(tmp_path):
-    """Test processing sample CSV and generating exact 252-column delivery output."""
-    sample_csv = tmp_path / "test_input.csv"
-    output_dir = tmp_path / "output"
+class FakePipeline:
+    async def run(self, **kwargs):
+        row = json.loads(kwargs["content"])
+        source = SourceExcerpt(source_id=uuid4(), text="CSV source")
+        fields = [
+            ProductField(name="mfg_part_num", display_name="Mfg part", value=row["Manufacturer Part Number"], confidence=95, source_excerpt=source, reasoning="source", status=FieldStatus.AUTO_COMMITTED),
+            ProductField(name="sku", display_name="SKU", value=row["SKU"], confidence=95, source_excerpt=source, reasoning="source", status=FieldStatus.AUTO_COMMITTED),
+            ProductField(name="part_desc", display_name="Description", value=row["Description"], confidence=95, source_excerpt=source, reasoning="source", status=FieldStatus.AUTO_COMMITTED),
+        ]
+        return SimpleNamespace(id=uuid4(), name=row["Description"], category="generic", confidence_overall=95, fields=fields)
 
-    with open(sample_csv, mode="w", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
-        writer.writerow(["Mfg_Part_Num", "Part_Desc", "E1_Brand", "Unilog_Brand", "DIB_Brand", "Part_Manuf"])
-        writer.writerow(["DCB518ASTS06G", "Diablo 1/2in x 18in Sanding Belt", "Unbranded", "No Unilog", "No DIB", "Freud Inc"])
 
-    processor = CSVProcessor()
-    summary = await processor.process_file(
-        input_csv_path=sample_csv,
-        output_dir=output_dir,
-    )
+def test_csv_processor_preserves_source_identity_and_manifest(tmp_path):
+    async def run():
+        sample_csv = tmp_path / "input.csv"
+        output_dir = tmp_path / "output"
+        sample_csv.write_text("Manufacturer Part Number,SKU,Description\nMPN-1,SKU-1,Example widget\n", encoding="utf-8")
+        summary = await CSVProcessor(FakePipeline()).process_file(sample_csv, output_dir)
 
-    assert summary["total_processed"] == 1
-    out_csv = Path(summary["output_csv"])
-    assert out_csv.exists()
+        with Path(summary["output_csv"]).open(encoding="utf-8") as handle:
+            reader = csv.DictReader(handle)
+            row = next(reader)
+            assert len(reader.fieldnames or []) == len(EXPECTED_DELIVERY_HEADERS)
+        manifest = json.loads(Path(summary["output_manifest"]).read_text(encoding="utf-8"))
 
-    with open(out_csv, mode="r", encoding="utf-8") as f:
-        reader = csv.reader(f)
-        headers = next(reader)
-        row = next(reader)
+        assert row["Mfg_Part_Num"] == "MPN-1"
+        assert row["MANUFACTURER_PART_NUMBER"] == "MPN-1"
+        assert row["SKU - MY_PART_NUMBER"] == "SKU-1"
+        assert row["PART_NUMBER"].startswith("SL-")
+        assert row["PART_NUMBER"] not in {row["Mfg_Part_Num"], row["SKU - MY_PART_NUMBER"]}
+        assert row["UPC"] == "" and row["List Price"] == ""
+        assert manifest["rows"][0]["status"] == "needs_review"
 
-        # Check total delivery headers count (252 headers)
-        assert len(headers) == len(EXPECTED_DELIVERY_HEADERS)
-        assert len(row) == len(EXPECTED_DELIVERY_HEADERS)
+    asyncio.run(run())
 
-        row_dict = dict(zip(headers, row))
-        assert row_dict["Mfg_Part_Num"] == "DCB518ASTS06G"
-        assert row_dict["PART_NUMBER"] == "DCB518ASTS06G"
-        assert row_dict["MANUFACTURER_PART_NUMBER"] == "DCB518ASTS06G"
-        # A thin record is valid when live sources provide no verified specification.
-        assert row_dict["Part_Manuf"] == "Freud Inc"
-        assert "SourceLedger Catalog" not in row_dict.values()
+
+def test_delivery_sanity_flags_repeated_values_and_identifier_collapse():
+    rows = [
+        {"Mfg_Part_Num": f"MPN-{index}", "PART_NUMBER": f"MPN-{index}", "SKU - MY_PART_NUMBER": f"MPN-{index}", "UPC": "010000000000", "List Price": "24.99", "Product Name": f"Product {index}", "Classpath": "General"}
+        for index in range(6)
+    ]
+    manifest = [{"row_number": index, "status": "enriched"} for index in range(1, 7)]
+    issues = CSVProcessor._delivery_sanity_issues({row["Mfg_Part_Num"] for row in rows}, rows, manifest)
+
+    assert any(issue.startswith("repeated UPC") for issue in issues)
+    assert any(issue.startswith("repeated List Price") for issue in issues)
+    assert "identifier collapse in 6 rows" in issues
+    assert "classification diversity requires review" in issues

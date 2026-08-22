@@ -59,75 +59,161 @@ export const CatalogHealthTrendChart: React.FC<CatalogHealthTrendChartProps> = (
   products,
   currentLiveScore
 }) => {
-  const [timeframe, setTimeframe] = useState<'30' | '14' | '7'>('30');
+  const [timeframe, setTimeframe] = useState<'1' | '7' | '14' | '30'>('30');
   const [showAutoCommit, setShowAutoCommit] = useState(true);
   const [showHealthIndex, setShowHealthIndex] = useState(true);
   const [eventFilter, setEventFilter] = useState<'all' | 'spikes' | 'dips' | 'milestones'>('all');
   const [selectedPoint, setSelectedPoint] = useState<DailyTrendPoint | null>(null);
 
-  // ── Compute REAL trend data from actual products ──────────────────
+  // ── Compute REAL trend data from actual products in Database ──────────────────
   const rawData = useMemo<DailyTrendPoint[]>(() => {
     const safeProducts = products || [];
     if (safeProducts.length === 0) return [];
 
-    const sorted = [...safeProducts];
-    let runningConfSum = 0;
-    let autoCount = 0;
-    let reviewedCount = 0;
+    const now = new Date();
 
-    return sorted.map((p, idx) => {
-      const pConf = typeof p?.confidence === 'number' && !isNaN(p.confidence) ? p.confidence : 0;
-      const pName = p?.name || 'Product';
-      const pCategory = p?.category || 'Uncategorized';
-      const pFieldsCount = p?.fieldsCount || 0;
+    if (timeframe === '1') {
+      // ── 1 DAY VIEW: Hourly breakdown (Past 24 Hours) ──────────────────
+      const points: DailyTrendPoint[] = [];
 
-      runningConfSum += pConf;
-      const avgConf = +(runningConfSum / (idx + 1)).toFixed(1);
-      if (p?.status === 'auto_committed' || p?.status === 'human_corrected') autoCount++;
-      if (p?.status === 'human_corrected') reviewedCount++;
-      const autoRate = +((autoCount / (idx + 1)) * 100).toFixed(1);
-      const healthIdx = +(avgConf * 0.7 + autoRate * 0.3).toFixed(1);
-      const prevConf = idx > 0 ? +(runningConfSum - pConf) / idx : 0;
-      const delta = idx > 0 ? +(avgConf - prevConf).toFixed(1) : 0;
+      // Generate 12 two-hour interval buckets for today (00:00, 02:00, ... 22:00)
+      for (let h = 0; h < 24; h += 2) {
+        const hourLabel = `${h.toString().padStart(2, '0')}:00`;
 
-      const point: DailyTrendPoint = {
-        date: `Item ${idx + 1}`,
-        day: idx + 1,
-        confidence: isNaN(avgConf) ? 0 : avgConf,
-        confidenceDelta: isNaN(delta) ? 0 : delta,
-        autoCommitRate: isNaN(autoRate) ? 0 : autoRate,
-        resolvedConflicts: reviewedCount,
-        healthIndex: isNaN(healthIdx) ? 0 : healthIdx,
-        totalSkus: idx + 1,
-      };
+        const prodsUpToHour = safeProducts.filter(p => {
+          if (!p.createdAt) return true;
+          try {
+            const d = new Date(p.createdAt);
+            return d.getHours() <= h || d.getDate() < now.getDate();
+          } catch {
+            return true;
+          }
+        });
 
-      if (idx === 0) {
-        point.annotation = {
-          type: 'milestone',
-          title: 'First Product Ingested',
-          cause: `"${pName.slice(0, 50)}" extracted with ${pFieldsCount} fields.`,
-          impact: `Baseline confidence: ${pConf}%`,
-          badge: 'Pipeline Start',
-          sourceType: pCategory,
+        const activeProds = prodsUpToHour.length > 0 ? prodsUpToHour : safeProducts;
+        const totalCount = activeProds.length;
+        const sumConf = activeProds.reduce((acc, p) => acc + (p.confidence || 0), 0);
+        const avgConf = +(sumConf / (totalCount || 1)).toFixed(1);
+
+        const autoCount = activeProds.filter(
+          p => p.status === 'auto_committed' || p.status === 'human_corrected'
+        ).length;
+        const reviewedCount = activeProds.filter(p => p.status === 'human_corrected').length;
+        const autoRate = +((autoCount / (totalCount || 1)) * 100).toFixed(1);
+        const healthIdx = +(avgConf * 0.7 + autoRate * 0.3).toFixed(1);
+
+        const prevPoint = points[points.length - 1];
+        const delta = prevPoint ? +(avgConf - prevPoint.confidence).toFixed(1) : 0;
+
+        const point: DailyTrendPoint = {
+          date: hourLabel,
+          day: Math.floor(h / 2) + 1,
+          confidence: isNaN(avgConf) ? 0 : avgConf,
+          confidenceDelta: isNaN(delta) ? 0 : delta,
+          autoCommitRate: isNaN(autoRate) ? 0 : autoRate,
+          resolvedConflicts: reviewedCount,
+          healthIndex: isNaN(healthIdx) ? 0 : healthIdx,
+          totalSkus: totalCount,
         };
-      } else if (avgConf >= 90 && (idx === 0 || +(runningConfSum - pConf) / idx < 90)) {
-        point.annotation = {
-          type: 'milestone',
-          title: '90% Confidence Achieved',
-          cause: `Running average crossed 90% after ${idx + 1} products.`,
-          impact: `${autoCount} products auto-committed.`,
-          badge: 'Quality Milestone',
-        };
+
+        if (h === 0 && activeProds.length > 0) {
+          const firstP = activeProds[0];
+          point.annotation = {
+            type: 'milestone',
+            title: '1-Day Window Baseline',
+            cause: `"${(firstP?.name || 'Product').slice(0, 40)}" extracted with ${firstP?.fieldsCount || 0} fields.`,
+            impact: `Initial 24h baseline confidence: ${avgConf}%`,
+            badge: '24h Monitor',
+            sourceType: firstP?.category,
+          };
+        } else if (avgConf >= 90 && (!prevPoint || prevPoint.confidence < 90)) {
+          point.annotation = {
+            type: 'milestone',
+            title: '90% Quality Level',
+            cause: `Hourly quality score achieved ${avgConf}% across active pipeline.`,
+            impact: `${autoCount} SKUs auto-committed cleanly.`,
+            badge: 'Quality Milestone',
+          };
+        }
+
+        points.push(point);
       }
 
-      return point;
-    });
-  }, [products]);
+      return points;
+    } else {
+      // ── MULTI-DAY VIEWS (7, 14, 30 Days): Real Date Aggregation ──────
+      const daysCount = parseInt(timeframe, 10);
+      const points: DailyTrendPoint[] = [];
 
-  const filteredData = useMemo(() => {
-    const count = parseInt(timeframe, 10);
-    return rawData.slice(Math.max(0, rawData.length - count));
-  }, [rawData, timeframe]);
+      for (let i = daysCount - 1; i >= 0; i--) {
+        const targetDate = new Date(now);
+        targetDate.setDate(now.getDate() - i);
+        const dateStr = targetDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+
+        const prodsOnDate = safeProducts.filter(p => {
+          if (!p.createdAt) return true;
+          try {
+            const d = new Date(p.createdAt);
+            return d <= targetDate || (d.getDate() === targetDate.getDate() && d.getMonth() === targetDate.getMonth());
+          } catch {
+            return true;
+          }
+        });
+
+        const activeProds = prodsOnDate.length > 0 ? prodsOnDate : safeProducts;
+        const totalCount = activeProds.length;
+        const sumConf = activeProds.reduce((acc, p) => acc + (p.confidence || 0), 0);
+        const avgConf = +(sumConf / (totalCount || 1)).toFixed(1);
+
+        const autoCount = activeProds.filter(
+          p => p.status === 'auto_committed' || p.status === 'human_corrected'
+        ).length;
+        const reviewedCount = activeProds.filter(p => p.status === 'human_corrected').length;
+        const autoRate = +((autoCount / (totalCount || 1)) * 100).toFixed(1);
+        const healthIdx = +(avgConf * 0.7 + autoRate * 0.3).toFixed(1);
+
+        const prevPoint = points[points.length - 1];
+        const delta = prevPoint ? +(avgConf - prevPoint.confidence).toFixed(1) : 0;
+
+        const point: DailyTrendPoint = {
+          date: dateStr,
+          day: daysCount - i,
+          confidence: isNaN(avgConf) ? 0 : avgConf,
+          confidenceDelta: isNaN(delta) ? 0 : delta,
+          autoCommitRate: isNaN(autoRate) ? 0 : autoRate,
+          resolvedConflicts: reviewedCount,
+          healthIndex: isNaN(healthIdx) ? 0 : healthIdx,
+          totalSkus: totalCount,
+        };
+
+        if (i === daysCount - 1 && activeProds.length > 0) {
+          const firstP = activeProds[0];
+          point.annotation = {
+            type: 'milestone',
+            title: 'First Product Ingested',
+            cause: `"${(firstP?.name || 'Product').slice(0, 40)}" extracted with ${firstP?.fieldsCount || 0} fields.`,
+            impact: `Baseline confidence: ${avgConf}%`,
+            badge: 'Pipeline Start',
+            sourceType: firstP?.category,
+          };
+        } else if (i === 0 && avgConf >= 85) {
+          point.annotation = {
+            type: 'milestone',
+            title: 'Current Quality Goal',
+            cause: `Running catalog average reached ${avgConf}% across ${totalCount} SKUs.`,
+            impact: `${autoCount} SKUs auto-committed.`,
+            badge: 'Quality Milestone',
+          };
+        }
+
+        points.push(point);
+      }
+
+      return points;
+    }
+  }, [products, timeframe]);
+
+  const filteredData = rawData;
 
   const startPoint = filteredData[0];
   const endPoint = filteredData[filteredData.length - 1];
@@ -346,7 +432,7 @@ export const CatalogHealthTrendChart: React.FC<CatalogHealthTrendChartProps> = (
             <span>Telemetry & Quality Trajectory</span>
           </div>
           <h3 className="font-didone font-bold text-2xl sm:text-3xl text-[#1A1A1A] tracking-tight flex items-center gap-2">
-            <span>30-Day Catalog Confidence & <span className="font-didone-italic text-[#E8622C] font-normal">Health Trajectory</span></span>
+            <span>{timeframe === '1' ? '24-Hour' : `${timeframe}-Day`} Catalog Confidence & <span className="font-didone-italic text-[#E8622C] font-normal">Health Trajectory</span></span>
           </h3>
           <p className="text-xs text-[#1A1A1A]/60 mt-0.5">
             Hover over any data point to inspect root-cause explanations for significant quality surges, ingestion dips, and model milestones.
@@ -397,7 +483,7 @@ export const CatalogHealthTrendChart: React.FC<CatalogHealthTrendChartProps> = (
 
           {/* Timeframe Selector */}
           <div className="flex items-center gap-1 bg-white/60 backdrop-blur-md p-1 rounded-2xl border border-white/70 shadow-2xs">
-            {(['7', '14', '30'] as const).map((t) => (
+            {(['1', '7', '14', '30'] as const).map((t) => (
               <button
                 key={t}
                 onClick={() => setTimeframe(t)}
@@ -407,7 +493,7 @@ export const CatalogHealthTrendChart: React.FC<CatalogHealthTrendChartProps> = (
                     : 'text-[#5C554D] hover:bg-white/60'
                 }`}
               >
-                {t} Days
+                {t === '1' ? '1 Day' : `${t} Days`}
               </button>
             ))}
           </div>

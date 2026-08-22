@@ -30,14 +30,15 @@ class GeminiGatewayClient:
             or os.getenv("API_URL")
             or getattr(settings, "api_url", "")
             or getattr(settings, "gemini_proxy_url", "")
+            or getattr(settings, "proxy_url", "")
             or "https://free-api-erel.onrender.com/api/generate"
-        ).rstrip("/")
-        
-        self.base_url = raw_url
+        )
+        self.base_url = raw_url.replace("/api/generate", "").rstrip("/")
         self.auth_token = (
             auth_token
             or os.getenv("API_KEY")
             or getattr(settings, "api_key", "")
+            or getattr(settings, "gemini_proxy_token", "")
             or getattr(settings, "proxy_auth_token", "")
             or "sk_proxy_qu7f0nNyFooVFjM3iNb_lmwZr_NP-BuL"
         )

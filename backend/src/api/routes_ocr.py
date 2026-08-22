@@ -7,7 +7,7 @@ import sys
 import logging
 from pathlib import Path
 from typing import Optional
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException
+from fastapi import APIRouter, Header, UploadFile, File, Form, HTTPException
 from fastapi.responses import JSONResponse
 
 # Ensure backend/ocr_feature is in sys.path
@@ -69,7 +69,8 @@ async def get_gateway_status():
 async def extract_document_image(
     file: UploadFile = File(...),
     document_type: str = Form("general"),
-    enable_refinement: bool = Form(True)
+    enable_refinement: bool = Form(True),
+    x_user_id: Optional[str] = Header(None, alias="x-user-id"),
 ):
     """
     Extract structured text from uploaded image using the OCR Agent system.
@@ -91,7 +92,7 @@ async def extract_document_image(
 
         logger.info(
             f"Received OCR extraction request: filename={file.filename}, "
-            f"type={document_type}, refinement={enable_refinement}"
+            f"type={document_type}, refinement={enable_refinement}, user={x_user_id}"
         )
 
         result = agent.extract_structured_text(
@@ -115,6 +116,7 @@ async def extract_document_image(
                 TrustTier,
             )
 
+            active_user = x_user_id or "default_user"
             source_id = uuid4()
             filename_clean = file.filename or "ocr_scan.png"
             is_pdf = filename_clean.lower().endswith(".pdf")
@@ -126,7 +128,7 @@ async def extract_document_image(
                 content_hash=f"ocr_{uuid4().hex[:12]}",
                 trust_tier=TrustTier.MARKETPLACE,
             )
-            await store.save_source(backend_source)
+            await store.save_source(backend_source, user_id=active_user)
 
             struct_data = result.structured_data or {}
             val_report = result.validation_report or {}
@@ -194,8 +196,13 @@ async def extract_document_image(
                 source_ids=[source_id],
                 confidence_overall=conf_score,
             )
-            await store.save_product(backend_prod)
-            logger.info(f"Persisted OCR product '{backend_prod.name}' ({backend_prod.id}) to store.")
+            await store.save_product(backend_prod, user_id=active_user)
+            logger.info(f"Persisted OCR product '{backend_prod.name}' ({backend_prod.id}) to store for user {active_user}.")
+
+            res_dict = result.model_dump()
+            res_dict["product_id"] = str(backend_prod.id)
+            res_dict["source_id"] = str(source_id)
+            return JSONResponse(content=res_dict)
         except Exception as store_err:
             logger.warning(f"Failed to persist OCR product to backend store: {store_err}")
 

@@ -8,7 +8,8 @@ from .enrichment_agent import EnrichmentAgent
 from .explainability_layer import ExplainabilityLayer
 from .extraction_agent import ExtractionAgent
 from .ingestion_agent import IngestionAgent
-from .main import APIKeyRotator, AgentPipeline, main_pipeline
+from .key_rotator import APIKeyRotator, key_rotator
+from .main import AgentPipeline, main_pipeline
 from .validation_agent import ValidationAgent
 
 __all__ = [
@@ -19,5 +20,6 @@ __all__ = [
     "ExplainabilityLayer",
     "AgentPipeline",
     "APIKeyRotator",
+    "key_rotator",
     "main_pipeline",
 ]

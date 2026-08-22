@@ -3,7 +3,8 @@
 from datetime import datetime, timezone
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException
+from typing import Optional
+from fastapi import APIRouter, Header, HTTPException
 
 from ..db.store import store
 from ..models.api import (
@@ -18,9 +19,9 @@ router = APIRouter(prefix="/api", tags=["review"])
 
 
 @router.get("/review", response_model=ReviewQueueResponse)
-async def get_review_queue() -> ReviewQueueResponse:
-    """List all fields needing human review across all products."""
-    items_raw = await store.get_review_queue()
+async def get_review_queue(x_user_id: Optional[str] = Header(None, alias="x-user-id")) -> ReviewQueueResponse:
+    """List all fields needing human review across all products for authenticated user."""
+    items_raw = await store.get_review_queue(user_id=x_user_id)
     items = [
         ReviewQueueItem(
             field=item["field"],
@@ -42,13 +43,9 @@ async def review_field(
     product_id: UUID,
     field_id: UUID,
     request: ReviewActionRequest,
+    x_user_id: Optional[str] = Header(None, alias="x-user-id"),
 ) -> ReviewActionResponse:
-    """Accept, edit, or reject a field value in the review queue.
-
-    - accept: mark field as auto_committed with its current value
-    - edit: update value to corrected_value, mark as human_corrected
-    - reject: set value to None, mark as needs_review (stays in queue)
-    """
+    """Accept, edit, or reject a field value in the review queue."""
     product = await store.get_product(product_id)
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
@@ -89,6 +86,7 @@ async def review_field(
         product_id, field_id, new_value=field.value, new_status=field.status
     )
 
+    active_user = x_user_id or "default_user"
     # Record the review action for audit trail and active learning
     review_action = ReviewAction(
         field_id=field_id,
@@ -98,9 +96,65 @@ async def review_field(
         corrected_value=request.corrected_value,
         reviewer=request.reviewer,
     )
-    await store.save_review_action(review_action)
+    await store.save_review_action(review_action, user_id=active_user)
+
+    # Active Learning CorrectionPattern tracking (Phase 10)
+    from ..models.schemas import CorrectionPattern
+    mfr_val = next((str(f.value) for f in product.fields if f.name.lower() in ("manufacturer", "brand", "part_manuf")), None)
+    patterns = store.get_correction_patterns()
+    pat_id = f"{product.category}:{field.name}:{mfr_val or 'all'}"
+    existing = next((p for p in patterns if f"{p.category}:{p.field_name}:{p.manufacturer or 'all'}" == pat_id), None)
+    new_count = (existing.correction_count + 1) if existing else 1
+    
+    pat = CorrectionPattern(
+        category=product.category,
+        field_name=field.name,
+        manufacturer=mfr_val,
+        correction_count=new_count,
+        avg_confidence_before_correction=float(field.confidence),
+        last_updated=datetime.now(timezone.utc),
+    )
+    store.save_correction_pattern(pat)
 
     return ReviewActionResponse(
         review_action=review_action,
         updated_field=field,
     )
+
+
+@router.post("/products/{product_id}/fields/{field_id}/review/bulk")
+async def bulk_review_field(
+    product_id: UUID,
+    field_id: UUID,
+    request: ReviewActionRequest,
+):
+    """One-click bulk correction (Phase 12b).
+
+    Applies the reviewer's correction to all other needs_review items sharing
+    the same category, field name, and original value pattern across the catalog.
+    """
+    primary_res = await review_field(product_id, field_id, request)
+    
+    # Query all matching records needing review
+    all_queue = await store.get_review_queue()
+    matching_targets = [
+        item for item in all_queue
+        if item["field"].name == primary_res.updated_field.name
+        and item["field"].value == primary_res.review_action.original_value
+        and item["product_id"] != product_id
+    ]
+
+    bulk_count = 0
+    for target in matching_targets:
+        try:
+            await review_field(target["product_id"], target["field"].id, request)
+            bulk_count += 1
+        except Exception:
+            pass
+
+    return {
+        "status": "success",
+        "primary_action": primary_res,
+        "bulk_applied_count": bulk_count,
+        "message": f"Successfully applied bulk correction across {bulk_count + 1} matching records.",
+    }

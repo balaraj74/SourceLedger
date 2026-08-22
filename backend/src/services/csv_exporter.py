@@ -18,6 +18,7 @@ import json
 from typing import Any, Dict, List, Optional
 
 from ..models.product_record import ProductField, ProductRecord
+from ..models.unihack_schema import map_product_fields_to_unihack_row
 from ..utils.logging import get_logger
 
 logger = get_logger("csv_exporter")
@@ -166,134 +167,9 @@ def _get_list(fields: Dict[str, ProductField], key: str) -> List[str]:
 
 
 def product_record_to_row(product: ProductRecord) -> Dict[str, str]:
-    """Map a ProductRecord to a flat dict with the 252 delivery column names.
-
-    Strategy:
-    1. Write all fixed-column fields directly.
-    2. Expand ITEM_FEATURES list across ITEM_FEATURES_1…20 columns.
-    3. Put remaining extracted fields (specs, attributes) into
-       ATTRIBUTE_LABEL n / ATTRIBUTE_VALUE n / ATTRIBUTE_UOM n slots.
-    """
-    # Build a lookup: field.name → ProductField
-    field_map: Dict[str, ProductField] = {}
-    for f in product.fields:
-        if f.name not in field_map:
-            field_map[f.name] = f
-        # Also index by display_name snake_case for fuzzy lookup
-        dn_key = f.display_name.lower().replace(" ", "_").replace("/", "_")
-        if dn_key not in field_map:
-            field_map[dn_key] = f
-
-    row: Dict[str, str] = {col: "" for col in DELIVERY_COLUMNS}
-
-    # ── 1. Fixed columns ─────────────────────────────────────────────
-    for internal_name, col_name in FIXED_FIELD_MAP.items():
-        val = _get(field_map, internal_name)
-        if val and not row[col_name]:  # don't overwrite if already set
-            row[col_name] = val
-
-    # PART_NUMBER fallback chain
-    if not row["PART_NUMBER"]:
-        row["PART_NUMBER"] = _get(field_map, "part_number", "mfg_part_num", "model_number", "sku")
-    if not row["Mfg_Part_Num"]:
-        row["Mfg_Part_Num"] = row["PART_NUMBER"]
-    if not row["SKU - MY_PART_NUMBER"]:
-        row["SKU - MY_PART_NUMBER"] = row["PART_NUMBER"]
-    if not row["MANUFACTURER_PART_NUMBER"]:
-        row["MANUFACTURER_PART_NUMBER"] = row["PART_NUMBER"]
-
-    # Part_Desc fallback
-    if not row["Part_Desc"]:
-        row["Part_Desc"] = _get(field_map, "part_desc", "short_desc") or product.name
-
-    # Product Name column
-    row["Product Name"] = product.name
-
-    # MANUFACTURER_NAME fallback
-    if not row["MANUFACTURER_NAME"]:
-        row["MANUFACTURER_NAME"] = _get(field_map, "manufacturer", "brand", "part_manuf")
-    if not row["BRAND_NAME"]:
-        row["BRAND_NAME"] = row["MANUFACTURER_NAME"]
-    if not row["Part_Manuf"]:
-        row["Part_Manuf"] = row["MANUFACTURER_NAME"]
-    if not row["E1_Brand"]:
-        row["E1_Brand"] = row["BRAND_NAME"]
-
-    # Brand columns remain empty when no source-backed brand exists.
-
-    # Taxonomy defaults
-    if not row["Dept"]:
-        row["Dept"] = _get(field_map, "dept") or "Industrial & Commercial"
-    if not row["Class"]:
-        row["Class"] = _get(field_map, "category_class") or "Equipment & Supplies"
-    if not row["Fine"]:
-        row["Fine"] = _get(field_map, "fine_category") or product.category.replace("_", " ").title()
-    if not row["Classpath"]:
-        row["Classpath"] = (
-            _get(field_map, "classpath", "category_path")
-            or f"{row['Dept']}>{row['Class']}>{row['Fine']}"
-        )
-
-    # UNSPSC
-    if not row["UNSPSC"]:
-        row["UNSPSC"] = _get(field_map, "unspsc_code", "unspsc")
-
-    # Country of Origin
-    if not row["Country Of Origin"]:
-        row["Country Of Origin"] = _get(field_map, "country_of_origin", "country_of_manufacture")
-
-    # Actual Image
-    row["Actual Image (Yes/No)"] = "Yes" if row.get("Product Image") else "No"
-    row["Discontinued"] = "No"
-
-    # Standard/Approvals — certifications list → semicolon-joined
-    if not row["Standard/Approvals"]:
-        certs = _get_list(field_map, "certifications") or _get_list(field_map, "standard_approvals")
-        row["Standard/Approvals"] = "; ".join(certs)
-
-    # ── 2. ITEM_FEATURES expansion ───────────────────────────────────
-    features = _get_list(field_map, "item_features")
-    for i, feat in enumerate(features[:20], start=1):
-        row[f"ITEM_FEATURES_{i}"] = feat
-
-    # ── 3. ATTRIBUTE slots ───────────────────────────────────────────
-    # Collect fields that aren't in fixed columns and aren't skipped
-    attribute_fields: List[ProductField] = []
-    seen_attr_names = set()
-
-    for f in product.fields:
-        if f.name in _FIXED_ONLY:
-            continue
-        if f.name in seen_attr_names:
-            continue
-        if f.value is None:
-            continue
-        # Skip list-type fields that belong in features/keywords
-        if isinstance(f.value, list) and f.name in ("item_keywords", "item_key_selling_points"):
-            continue
-        seen_attr_names.add(f.name)
-        attribute_fields.append(f)
-
-    for slot, f in enumerate(attribute_fields[:50], start=1):
-        val = f.value
-        if isinstance(val, list):
-            val = "; ".join(str(x) for x in val)
-        else:
-            val = str(val) if val is not None else ""
-
-        row[f"ATTRIBUTE_LABEL {slot}"] = f.display_name
-        row[f"ATTRIBUTE_VALUE {slot}"] = val
-        row[f"ATTRIBUTE_UOM {slot}"] = f.unit or ""
-
-    logger.info(
-        "csv_exporter: mapped '%s' → %d attributes, %d features, %d fixed columns",
-        product.name,
-        len(attribute_fields),
-        len(features),
-        sum(1 for v in row.values() if v),
-    )
-    return row
-
+    """Map a product through the canonical source-backed delivery mapper."""
+    mapped = map_product_fields_to_unihack_row(product.fields, title=product.name, sku="")
+    return {column: mapped.get(column, "") for column in DELIVERY_COLUMNS}
 
 def products_to_csv_bytes(products: List[ProductRecord]) -> bytes:
     """Serialize a list of ProductRecords to UTF-8 BOM CSV bytes (Excel-compatible).

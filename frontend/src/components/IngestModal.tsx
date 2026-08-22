@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { ProductRecord, IngestionSource } from '../types';
 import { ingestSource as apiIngestSource, mapOcrResultToProductRecord } from '../lib/api';
+import { supabase } from '../lib/supabase';
 
 interface IngestModalProps {
   isOpen: boolean;
@@ -127,15 +128,23 @@ Material Grade: Alloy Steel, Quenched and Tempered`
     const file = e.target.files?.[0];
     if (!file) return;
 
+    const lowerName = file.name.toLowerCase();
+    const isImage = file.type.startsWith('image/') || /\.(png|jpe?g|webp|bmp|gif|tiff?)$/.test(lowerName);
+
+    if (isImage) {
+      setActiveTab('ocr');
+      handleOcrFileChange(file);
+      return;
+    }
+
     setFilename(file.name);
     setErrorMsg(null);
 
     const validExtensions = ['.pdf', '.csv', '.txt', '.json', '.html', '.md', '.xlsx', '.xls'];
-    const lowerName = file.name.toLowerCase();
     const isValid = validExtensions.some(ext => lowerName.endsWith(ext));
 
     if (!isValid) {
-      setErrorMsg(`Unsupported file type: ${file.name}. Please upload a PDF, Excel, CSV, or Text file.`);
+      setErrorMsg(`Unsupported file type: ${file.name}. Please upload a PDF, Excel, CSV, Image, or Text file.`);
       return;
     }
 
@@ -272,8 +281,16 @@ Material Grade: Alloy Steel, Quenched and Tempered`
       formData.append('document_type', ocrDocType);
       formData.append('enable_refinement', enableRefinement.toString());
 
+      const { data: { session } } = await supabase.auth.getSession();
+      const currentUserId = session?.user?.id || session?.user?.email;
+      const headers: Record<string, string> = {};
+      if (currentUserId) {
+        headers['x-user-id'] = currentUserId;
+      }
+
       const res = await fetch('/api/extract', {
         method: 'POST',
+        headers,
         body: formData,
       });
 

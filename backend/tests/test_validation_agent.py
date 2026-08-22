@@ -138,7 +138,9 @@ class TestValidationAgent:
             name="nonexistent_field",
             display_name="Not Real",
             confidence=90,
+            excerpt="",
         )
+
         result = await agent.validate([field], "industrial_pump")
 
         assert result.fields[0].confidence <= 30

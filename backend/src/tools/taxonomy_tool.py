@@ -63,11 +63,6 @@ def lookup_product_taxonomy(product_name: str, category: str) -> Dict[str, str]:
                 "classpath": info["classpath"]
             }
 
-    # Default fallback
-    return {
-        "unspsc": "40000000",
-        "dept": "Industrial & Commercial",
-        "category_class": "Equipment & Supplies",
-        "fine_category": "General",
-        "classpath": "Industrial & Commercial>Equipment & Supplies>General"
-    }
+    # An unrecognized product is not safely classifiable from keywords alone.
+    # Return an explicit review signal rather than a catalogue-wide fallback.
+    return {"needs_review": "taxonomy not source-verified"}

@@ -8,14 +8,22 @@ Architectural rule: the system is designed to know what it doesn't know.
 Low-confidence or conflicting data is never guessed past — it is surfaced.
 """
 
-from typing import Any
+from typing import Any, Optional
+from uuid import UUID
 
 from google import genai
 
 from ..config import settings
+from ..db.store import store
 from ..models.pipeline import ValidationResult
 from ..models.product_record import FieldStatus, ProductField
-from ..models.schemas import CategorySchema, FieldType, get_category_schema
+from ..models.schemas import (
+    CategorySchema,
+    FieldCandidate,
+    FieldConflict,
+    FieldType,
+    get_category_schema,
+)
 from ..utils.logging import get_logger, log_agent_step
 
 logger = get_logger("ValidationAgent")
@@ -156,6 +164,73 @@ class ValidationAgent:
                 auto_committed_count=auto_committed,
             )
 
+    def detect_and_resolve_conflicts(
+        self,
+        product_id: UUID,
+        multi_source_candidates: dict[str, list[FieldCandidate]],
+        validated_fields: list[ProductField],
+        store_instance: Optional[Any] = None,
+    ) -> tuple[list[ProductField], list[FieldConflict]]:
+        """Detect disagreements across sources and persist conflict records (Phase 7)."""
+        target_store = store_instance or store
+        conflicts: list[FieldConflict] = []
+        field_dict = {f.name: f for f in validated_fields}
+
+        for field_name, candidates in multi_source_candidates.items():
+            if len(candidates) < 2:
+                # Regression rule: zero FieldConflict rows for single-source fields
+                continue
+
+            def _norm(val: Any) -> str:
+                return " ".join(str(val).strip().lower().split())
+
+            unique_vals = {_norm(c.value) for c in candidates if c.value is not None and str(c.value).strip()}
+            if len(unique_vals) <= 1:
+                # Sources agree — no conflict record needed
+                continue
+
+            # Cross-source conflict detected!
+            sorted_candidates = sorted(candidates, key=lambda c: c.trust_tier)
+            top_tier = sorted_candidates[0].trust_tier
+            top_candidates = [c for c in sorted_candidates if c.trust_tier == top_tier]
+            top_unique_vals = {_norm(c.value) for c in top_candidates}
+
+            target_field = field_dict.get(field_name)
+
+            if len(top_unique_vals) == 1:
+                # Clear winner from higher trust tier!
+                winner = top_candidates[0]
+                resolution = str(winner.value)
+                reasoning = f"Tier {winner.trust_tier} source outranks lower-tier candidates."
+                resolved_confidence = min(95, max(60, 100 - (winner.trust_tier * 10)))
+                if target_field:
+                    target_field.value = winner.value
+                    target_field.confidence = resolved_confidence
+                    target_field.reasoning += f" | Conflict resolved: {reasoning}"
+            else:
+                # Tie at highest trust tier — force NEEDS_REVIEW
+                winner = top_candidates[0]
+                resolution = str(winner.value)
+                reasoning = f"Cross-source disagreement between Tier {top_tier} sources — routed to human review."
+                resolved_confidence = 50
+                if target_field:
+                    target_field.status = FieldStatus.NEEDS_REVIEW
+                    target_field.confidence = min(target_field.confidence, resolved_confidence)
+                    target_field.reasoning += f" | Conflict unresolved: {reasoning}"
+
+            conflict = FieldConflict(
+                product_id=product_id,
+                field_name=field_name,
+                candidates=candidates,
+                resolution=resolution,
+                resolution_reasoning=reasoning,
+                resolved_confidence=resolved_confidence,
+            )
+            conflicts.append(conflict)
+            target_store.save_field_conflict(conflict)
+
+        return validated_fields, conflicts
+
     #: Known field alias mapping to schema standard field definitions
     _FIELD_ALIASES = {
         "mfg_part_num": "model_number",
@@ -186,6 +261,7 @@ class ValidationAgent:
         field: ProductField,
         schema: CategorySchema,
         threshold: int,
+        store_instance: Optional[Any] = None,
     ) -> ProductField:
         """Validate a single field: type-check, adjust confidence, set status."""
         target_name = self._FIELD_ALIASES.get(field.name.lower(), field.name)
@@ -225,8 +301,9 @@ class ValidationAgent:
                 pass
             else:
                 # Truly ungrounded or unknown field without source backing
-                field.confidence = min(field.confidence, 40)
+                field.confidence = min(field.confidence, 30)
                 field.reasoning += " | Uncertified field without strong source backing."
+
 
         # Null/empty value check
         if field.value is None or field.value == "" or field.value == []:
@@ -240,6 +317,21 @@ class ValidationAgent:
         if not field.source_excerpt.text or field.source_excerpt.text.startswith("("):
             field.confidence = max(0, field.confidence - 15)
             field.reasoning += " | Weak or missing source excerpt."
+
+        # Active Learning Adjustment (Phase 10)
+        try:
+            target_store = store_instance or store
+            patterns = target_store.get_correction_patterns()
+            match_pat = next(
+                (p for p in patterns if p.category == schema.category_key and p.field_name == field.name and p.correction_count >= 2),
+                None
+            )
+            if match_pat:
+                penalty = min(35, match_pat.correction_count * 5)
+                field.confidence = max(0, field.confidence - penalty)
+                field.reasoning += f" | Active learning adjustment: lowered confidence by -{penalty} due to {match_pat.correction_count} historical reviewer corrections."
+        except Exception as e:
+            logger.debug("Active learning pattern check skipped: %s", e)
 
         # Apply confidence threshold to determine status
         if field.confidence >= threshold:

@@ -12,8 +12,10 @@ This domain awareness is a core differentiator vs. generic "LLM
 extracts JSON" approaches.
 """
 
+from datetime import datetime
 from enum import Enum
-from typing import Optional
+from typing import Any, Literal, Optional
+from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field
 
@@ -778,4 +780,54 @@ def get_category_schema(category_key: str) -> CategorySchema | None:
 def list_categories() -> list[CategorySchema]:
     """Return all registered category schemas."""
     return list(CATEGORY_REGISTRY.values())
+
+
+# ── Phase 7–10 Data Models ────────────────────────────────────────────────
+
+
+class FieldCandidate(BaseModel):
+    """Candidate field value extracted from a specific source."""
+
+    value: Any
+    source_id: str
+    trust_tier: int
+    raw_excerpt: str = ""
+
+
+class FieldConflict(BaseModel):
+    """Recorded conflict when >= 2 sources disagree on a field value for a product."""
+
+    id: UUID = Field(default_factory=uuid4)
+    product_id: UUID
+    field_name: str
+    candidates: list[FieldCandidate]
+    resolution: str
+    resolution_reasoning: str
+    resolved_confidence: int
+
+
+class ProductRelationship(BaseModel):
+    """Product knowledge graph relationship between two SKUs."""
+
+    id: UUID = Field(default_factory=uuid4)
+    source_sku: str
+    target_sku: str
+    relationship_type: Literal[
+        "variant_of", "substitute_for", "compatible_with", "accessory_for", "same_family"
+    ]
+    confidence: int  # 0-100 scale
+    reasoning: str
+    evidence_field: Optional[str] = None
+
+
+class CorrectionPattern(BaseModel):
+    """Aggregated active learning pattern computed from reviewer corrections."""
+
+    category: str
+    field_name: str
+    manufacturer: Optional[str] = None
+    correction_count: int = 0
+    avg_confidence_before_correction: float = 0.0
+    last_updated: datetime = Field(default_factory=datetime.utcnow)
+
 

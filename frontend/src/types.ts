@@ -21,6 +21,23 @@ export interface ExtractedField {
   fieldType: 'text' | 'number' | 'dimension' | 'electrical' | 'boolean' | 'enum';
 }
 
+export interface FieldCandidate {
+  value: any;
+  source_id: string;
+  trust_tier: number;
+  raw_excerpt: string;
+}
+
+export interface FieldConflict {
+  id: string;
+  product_id: string;
+  field_name: string;
+  candidates: FieldCandidate[];
+  resolution: string;
+  resolution_reasoning: string;
+  resolved_confidence: number;
+}
+
 export interface FieldAuditEntry {
   id: string;
   timestamp: string;
@@ -46,6 +63,7 @@ export interface ProductRecord {
   confidenceLevel: ConfidenceLevel;
   status: RecordStatus;
   lastUpdated: string;
+  createdAt?: string;
   sourceDocument: string;
   fieldsCount: number;
   fieldsReviewedCount: number;
@@ -83,4 +101,4 @@ export interface CategoryOverview {
   accentColor: 'orange' | 'charcoal' | 'cream';
 }
 
-export type ActiveTab = 'dashboard' | 'review_queue' | 'field_inspector' | 'catalog' | 'sources' | 'settings' | 'ocr';
+export type ActiveTab = 'dashboard' | 'review_queue' | 'field_inspector' | 'catalog' | 'sources' | 'settings' | 'ocr' | 'quality_dashboard' | 'copilot';

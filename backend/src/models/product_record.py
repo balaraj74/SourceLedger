@@ -109,6 +109,8 @@ class SourceExcerpt(BaseModel):
     source_id: UUID
     text: str  # The exact excerpt from the source
     location: Optional[str] = None  # Page number, CSS selector, section heading, etc.
+    extraction_method: str = "text"  # "text", "vlm_image", or "vlm_pdf_table" (Phase 9)
+    bounding_box: Optional[dict] = None  # VLM image crop / bounding box coordinates (Phase 9)
 
 
 # ── ProductField ─────────────────────────────────────────────────────
@@ -180,6 +182,7 @@ class ProductRecord(BaseModel):
     mfg_part_num: Optional[str] = None
     taxonomy_code: Optional[str] = None  # UNSPSC/eCl@ss code (stretch)
     dedup_cluster_id: Optional[UUID] = None  # Dedup cluster (stretch)
+    conflicts: list[Any] = Field(default_factory=list)  # FieldConflict records (Phase 7)
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc)
     )

@@ -114,7 +114,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       {/* ========================================================
           30-DAY CATALOG CONFIDENCE & HEALTH TREND (Recharts)
           ======================================================== */}
-      <CatalogHealthTrendChart currentLiveScore={avgConfidence} />
+      <CatalogHealthTrendChart products={products} currentLiveScore={avgConfidence} />
 
       {/* ========================================================
           PRODUCT CATEGORY CONFIDENCE HEATMAP MATRIX
