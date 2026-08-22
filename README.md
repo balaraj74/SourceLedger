@@ -113,6 +113,7 @@ SourceLedger resolves catalog chaos through a multi-agent orchestration pipeline
 - **Confidence Scoring & Trust-Tier Ranking**: Computes overall and field-level confidence scores (0–100%) incorporating source trust tiers (Tier 1 OEM Manufacturer, Tier 2 Authorized Distributor, Tier 3 Marketplace).
 - **Field Inspector & Provenance**: Surfaces verbatim source excerpts, confidence badges, and LLM reasoning chains for every catalog field.
 - **Human-in-the-Loop Review Queue**: Dedicated workflow for catalog managers to review, accept, edit, or reject flagged attributes with immutable `ReviewAction` audit logging.
+- **Catalog Copilot & Multi-Agent Data Chat**: Real-time conversational interface with live read & execution access to the SQLite database (`ProductStore`). Dispatches multi-agent tools (`ValidationAgent`, `GraphAgent`, `DashboardService`, `ExplainabilityLayer`) on demand to filter specifications, scan cross-source conflicts, identify product variant families, and run anti-hardcoding audits with interactive quick-start chips, executed tool accordions, clickable cited SKUs, data preview tables, and dynamic follow-up actions.
 - **Supabase Authentication**: Production authentication suite featuring email/password sign-up, email verification access guard, sign-in, password reset workflows, and Google OAuth 2.0.
 - **Standardized Delivery CSV Exporter**: Exports catalog records into delivery CSV format (`output/Unihack_ Output - Delivery Format.csv`).
 
@@ -138,24 +139,26 @@ SourceLedger resolves catalog chaos through a multi-agent orchestration pipeline
 SourceLedger employs six specialized backend agents:
 
 ```text
-                           ┌─────────────────────────┐
-                           │      Orchestrator       │
-                           └────────────┬────────────┘
-                                        │
-      ┌──────────────────┬──────────────┼──────────────┬──────────────────┐
-      │                  │              │              │                  │
-┌─────▼──────────┐ ┌─────▼────────┐ ┌───▼──────────┐ ┌─▼─────────────┐ ┌──▼────────────┐
-│Ingestion Agent │ │Extraction    │ │Enrichment    │ │Validation   │ │Explainability│
-│PDF/Web/CSV/Hash│ │Agent (Schema)│ │Agent (Taxon) │ │Agent (Trust)│ │Layer (Audits)│
-└────────────────┘ └──────────────┘ └──────────────┘ └─────────────┘ └──────────────┘
+                                  ┌─────────────────────────┐
+                                  │      CopilotEngine      │  (Conversational Multi-Agent Router)
+                                  └────────────┬────────────┘
+                                               │
+      ┌──────────────────┬──────────────┬──────┴───────┬──────────────────┬──────────────────┐
+      │                  │              │              │                  │                  │
+┌─────▼──────────┐ ┌─────▼────────┐ ┌───▼──────────┐ ┌─▼─────────────┐ ┌──▼────────────┐ ┌──▼────────────┐
+│Ingestion Agent │ │Extraction    │ │Enrichment    │ │Validation   │ │GraphAgent    │ │Explainability│
+│PDF/Web/CSV/Hash│ │Agent (Schema)│ │Agent (Taxon) │ │Agent (Trust)│ │(Variant Graph)│ │Layer (Audits)│
+└────────────────┘ └──────────────┘ └──────────────┘ └─────────────┘ └──────────────┘ └──────────────┘
 ```
 
 1. **`IngestionAgent`** (`backend/src/agents/ingestion_agent.py`): Parses raw PDFs, HTML, text, and CSV files; generates unique SHA-256 content hashes for idempotency.
 2. **`ExtractionAgent`** (`backend/src/agents/extraction_agent.py` & `multi_phase_extractor.py`): Executes category-locked LLM extractions against category schemas.
 3. **`EnrichmentAgent`** (`backend/src/agents/enrichment_agent.py`): Fills missing attributes using secondary sources and maps UNSPSC/eCl@ss taxonomy codes.
-4. **`ValidationAgent`** (`backend/src/agents/validation_agent.py`): Calculates weighted field and record confidence scores, resolves multi-source conflicts, and sets review statuses.
-5. **`ExplainabilityLayer`** (`backend/src/agents/explainability_layer.py`): Annotates extracted fields with verbatim source text excerpts and LLM reasoning chains.
-6. **`KeyRotator` / Gateway Client** (`backend/src/agents/main.py` & `backend/ocr_feature/ocr_agent/gateway_client.py`): Thread-safe round-robin rotator managing API keys to prevent HTTP 429 rate limit errors.
+4. **`ValidationAgent`** (`backend/src/agents/validation_agent.py`): Calculates weighted field and record confidence scores, resolves multi-source conflicts (`list_field_conflicts`), and sets review statuses.
+5. **`GraphAgent`** (`backend/src/agents/graph_agent.py`): Analyzes product relationships, part-number prefix/suffix variants, compatibility, and cross-references across the catalog graph.
+6. **`ExplainabilityLayer`** (`backend/src/agents/explainability_layer.py`): Annotates extracted fields with verbatim source text excerpts and LLM reasoning chains.
+7. **`CopilotEngine`** (`backend/src/services/copilot_service.py`): Conversational catalog intelligence router. Synthesizes natural language answers by directly executing multi-agent tools over live SQLite database records.
+8. **`KeyRotator` / Gateway Client** (`backend/src/agents/key_rotator.py` & `backend/ocr_feature/ocr_agent/gateway_client.py`): Thread-safe round-robin rotator managing API keys to prevent HTTP 429 rate limit errors.
 
 ---
 
@@ -199,12 +202,17 @@ SourceLedger/
 │   │   │   ├── enrichment_agent.py    # Enrichment & taxonomy agent
 │   │   │   ├── explainability_layer.py# Provenance & citation layer
 │   │   │   ├── extraction_agent.py    # Schema-locked extraction agent
+│   │   │   ├── graph_agent.py         # Catalog variant relationship graph agent
 │   │   │   ├── ingestion_agent.py     # Document ingestion agent
+│   │   │   ├── key_rotator.py         # Round-robin API key rotator
 │   │   │   └── validation_agent.py    # Validation & confidence scoring agent
 │   │   ├── api/                       # FastAPI router endpoints
+│   │   │   ├── routes_conflicts.py    # Cross-source field conflicts endpoint
+│   │   │   ├── routes_copilot.py      # Catalog Copilot chat & suggestions endpoint
 │   │   │   ├── routes_dashboard.py    # Dashboard metrics endpoint
 │   │   │   ├── routes_export.py       # Delivery CSV export endpoint
 │   │   │   ├── routes_fields.py       # Field approval & override endpoints
+│   │   │   ├── routes_graph.py        # Knowledge graph relationships endpoint
 │   │   │   ├── routes_ingest.py       # Multi-agent ingestion endpoint
 │   │   │   ├── routes_ocr.py          # Vision OCR endpoint
 │   │   │   ├── routes_products.py     # Catalog products endpoints
@@ -216,7 +224,11 @@ SourceLedger/
 │   │   │   ├── product_record.py      # Core ProductRecord & ProductField models
 │   │   │   └── schemas.py             # Category schema registry
 │   │   ├── services/                  # Business logic & CSV exporters
-│   │   │   └── csv_processor.py       # CSV batch processing & delivery exporter
+│   │   │   ├── catalog_qa_service.py  # Anti-hardcoding & QA verification engine
+│   │   │   ├── copilot_service.py     # Multi-agent Copilot reasoning engine
+│   │   │   ├── csv_processor.py       # CSV batch processing & delivery exporter
+│   │   │   ├── dashboard_service.py   # Catalog quality metrics service
+│   │   │   └── jsonld_exporter.py     # Schema.org JSON-LD catalog exporter
 │   │   ├── config.py                  # Environment settings manager
 │   │   └── main.py                    # FastAPI application entry point
 │   ├── requirements.txt               # Backend Python dependencies
@@ -225,9 +237,11 @@ SourceLedger/
 │   ├── src/
 │   │   ├── components/                # React UI view components
 │   │   │   ├── auth/                  # Supabase authentication screens
+│   │   │   ├── CatalogCopilotView.tsx # Catalog Copilot & Multi-Agent Data Chat screen
 │   │   │   ├── CatalogHealthTrendChart.tsx
 │   │   │   ├── ConfidenceHeatmap.tsx
 │   │   │   ├── DashboardView.tsx
+│   │   │   ├── DataQualityDashboardView.tsx
 │   │   │   ├── FieldInspectorView.tsx
 │   │   │   ├── IngestModal.tsx
 │   │   │   ├── IngestionSourcesView.tsx
@@ -280,6 +294,8 @@ SourceLedger/
 
 | Endpoint | Method | Description |
 |---|---|---|
+| `/api/copilot/chat` | `POST` | Natural language chat query with multi-agent tool execution & SQLite data preview |
+| `/api/copilot/suggestions` | `GET` | Fetch contextual quick-start prompt suggestions for Copilot interface |
 | `/api/ingest` | `POST` | Ingest PDF, web URL/HTML, raw text, or CSV through multi-agent pipeline |
 | `/api/extract` | `POST` | Multimodal Vision OCR extraction for document images/PDFs |
 | `/api/products` | `GET` | List catalog product records with optional status/category filters |

@@ -4,7 +4,29 @@ All notable changes, architectural updates, and new features implemented in **So
 
 ---
 
-## [Unreleased] — Supabase Authentication & Multi-Page Multimodal OCR
+## [Unreleased] — Catalog Copilot, Supabase Auth & Multimodal OCR
+
+### 🤖 Catalog Copilot & Multi-Agent Data Chat
+Introduced **Catalog Copilot**, an interactive multi-agent data assistant providing natural language query capabilities over live catalog product records, source provenance excerpts, and quality metrics.
+
+#### Added Features & Architecture
+- **Conversational Intelligence Engine (`copilot_service.py` & `routes_copilot.py`)**:
+  - `POST /api/copilot/chat`: Executes natural language catalog queries grounded against the active SQLite `ProductStore` database.
+  - `GET /api/copilot/suggestions`: Delivers contextual quick-start prompt suggestions for fast access.
+  - Dispatches multi-agent tools on demand:
+    - ⚖️ **`ValidationAgent`**: Conflict detection & resolution via `list_field_conflicts`.
+    - 🔗 **`GraphAgent`**: Product variant family & relationship analysis (`analyze_catalog_relationships`).
+    - 🛡️ **`DashboardService`**: Quality metrics & anti-hardcoding audits (`compute_quality_dashboard_metrics`).
+    - 📜 **`ExplainabilityLayer`**: Line-level source excerpt citation retrieval.
+- **Glassmorphic Copilot UI (`CatalogCopilotView.tsx`)**:
+  - Built using SourceLedger design system tokens (`#F5E9D8`, `#191715`, `#E8622C`).
+  - **Quick-Start Prompt Chips**: Instant one-click triggers for filtering specifications, scanning cross-source conflicts, detecting variant families, and executing quality audits.
+  - **Executed Pipeline Agents Accordion**: Expandable view showing agent name, tool executed, and execution summary.
+  - **Clickable Cited SKUs**: Direct navigation chips linking cited products straight to the **Field Inspector**.
+  - **Live Data Preview Table**: Tabular preview showing matched product SKUs, names, categories, and confidence scores.
+  - **Suggested Follow-up Actions**: Dynamic action buttons generated per response.
+
+---
 
 ### 🔐 Supabase Authentication Implementation
 
